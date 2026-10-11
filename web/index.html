@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dshell</title>
+    <link rel="stylesheet" href="__STYLES__" />
+  </head>
+  <body class="chrome-body">
+    <!--
+      The tab strip. This is the ONLY webview with Tauri IPC access.
+      Content webviews (the DSH pages) have no capabilities at all: after they
+      navigate to a DSH origin they are a *remote* context, and nothing there may
+      reach dshell's commands.
+    -->
+    <div id="chrome" class="chrome">
+      <div class="chrome__drag" data-tauri-drag-region></div>
+      <div class="tabstrip" id="tabstrip" data-tauri-drag-region></div>
+      <div class="chrome__spacer" data-tauri-drag-region></div>
+      <div class="window-controls">
+        <button class="wc" id="wc-settings" title="设置" aria-label="设置">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M8 5.5A2.5 2.5 0 1 0 8 10.5 2.5 2.5 0 0 0 8 5.5Zm0 1.4a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2Z"
+            />
+            <path
+              fill="currentColor"
+              d="m13.2 9.1.9.7-1 1.7-1.1-.4a4.6 4.6 0 0 1-1 .6l-.2 1.2H8.6l-.2-1.2a4.6 4.6 0 0 1-1-.6l-1.2.4-1-1.7.9-.7a4.7 4.7 0 0 1 0-1.2l-.9-.7 1-1.7 1.2.4c.3-.2.6-.4 1-.5l.2-1.2h2.1l.2 1.2c.3.1.7.3 1 .5l1.1-.4 1 1.7-.9.7c.1.4.1.8 0 1.2Z"
+              opacity="0.55"
+            />
+          </svg>
+        </button>
+        <button class="wc" id="wc-min" title="最小化" aria-label="最小化">
+          <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
+            <path d="M0 5h10" stroke="currentColor" stroke-width="1" />
+          </svg>
+        </button>
+        <button class="wc" id="wc-max" title="最大化" aria-label="最大化">
+          <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
+            <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" />
+          </svg>
+        </button>
+        <button class="wc wc--close" id="wc-close" title="关闭窗口" aria-label="关闭窗口">
+          <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
+            <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1" />
+          </svg>
+        </button>
+      </div>
+    </div>
+    <script type="module" src="__APP_JS__"></script>
+  </body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "name": "dshell",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Tabbed desktop shell for DeepSeek Harness — one binary, tabs on top of the unmodified DSH web UI",
+  "type": "module",
+  "scripts": {
+    "dev": "node tools/build-ui.mjs --dev",
+    "build:ui": "node tools/build-ui.mjs",
+    "build": "node tools/build-ui.mjs && node tools/cargo.mjs build --release",
+    "app": "node tools/cargo.mjs run",
+    "check": "node tools/cargo.mjs clippy --all-targets -- -D warnings",
+    "binary": "node tools/package-binary.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.12.3",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,20 @@
+# Build output.
+# `dist/` is generated from `web/` by `tools/build-ui.mjs` and embedded into the
+# binary by Tauri's asset embedding — it is never committed.
+# `release/` is where `npm run binary` stages the deliverable executable.
+/dist/
+/release/
+/src-tauri/target/
+/src-tauri/gen/
+
+# Dependencies (esbuild, typescript, @tauri-apps/api types only).
+node_modules/
+
+# Local scratch
+*.log
+.dshell-dev/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

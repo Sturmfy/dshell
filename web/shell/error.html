@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dshell</title>
+    <link rel="stylesheet" href="__STYLES__" />
+  </head>
+  <body class="shell-body">
+    <!--
+      The failure page. Every failure must show three things: a readable cause,
+      the raw evidence, and what can be done next. Content comes from
+      `tab_failure_detail`, which works here — and only here — because this is a
+      dshell-origin document.
+    -->
+    <main class="shell shell--error" id="shell" data-mode="error">
+      <div class="shell__icon" aria-hidden="true">⚠</div>
+      <h1 class="shell__title" id="shell-title">出现问题</h1>
+      <p class="shell__subtitle" id="shell-subtitle"></p>
+      <pre class="shell__log" id="shell-log" hidden></pre>
+      <div class="shell__actions" id="shell-actions"></div>
+      <p class="shell__hint" id="shell-hint"></p>
+    </main>
+    <script type="module" src="__SHELL_JS__"></script>
+  </body>
+</html>
