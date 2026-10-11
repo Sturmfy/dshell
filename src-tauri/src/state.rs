@@ -58,9 +58,14 @@ impl AppState {
                 root::preview_default_dsh_home().map(|path| path.to_string_lossy().to_string())
             }
             DshHomeSetting::Instance => {
-                let name = PathBuf::from(workspace)
-                    .file_name()
-                    .map(|name| root::slug(&name.to_string_lossy()))
+                // The slug follows whatever identifies this tab's work, falling
+                // back to the same default the spawn itself uses.
+                let name = workspace
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .or_else(root::default_workspace)
+                    .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
+                    .map(|name| root::slug(&name))
                     .unwrap_or_else(|| "workspace".into());
                 Some(
                     self.data_root
@@ -72,6 +77,12 @@ impl AppState {
             }
             DshHomeSetting::Custom { path } => Some(path.clone()),
         }
+    }
+
+    /// Whether the user has completed the first-run wizard. Gates the panel that
+    /// dshell opens for itself at startup.
+    pub async fn onboarding_done(&self) -> bool {
+        self.config.lock().await.onboarding_done
     }
 
     pub async fn node(&self) -> Option<NodeInfo> {

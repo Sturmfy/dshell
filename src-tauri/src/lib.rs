@@ -66,7 +66,7 @@ pub fn main() {
             commands::app_info,
             commands::list_tabs,
             commands::active_tab,
-            commands::set_chrome_mode,
+            commands::set_panel,
             commands::new_tab,
             commands::close_tab,
             commands::activate_tab,
@@ -179,8 +179,22 @@ fn setup_app(
         let _ = window.maximize();
     }
 
-    restore_tabs(state);
+    restore_tabs(state.clone());
+    open_onboarding_if_needed(state);
     Ok(())
+}
+/// On a fresh install, open the panel ourselves.
+///
+/// The chrome UI also asks for this once it loads, but it cannot be relied on to
+/// be the first thing to run: the window should never show an empty content area
+/// just because the frontend was slow.
+pub fn open_onboarding_if_needed(state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        if state.onboarding_done().await {
+            return;
+        }
+        state.manager.show_panel(Some("onboarding")).await;
+    });
 }
 
 /// Reopen the tabs from the previous session.

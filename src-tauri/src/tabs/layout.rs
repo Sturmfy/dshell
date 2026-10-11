@@ -1,17 +1,34 @@
-//! Window/webview geometry. Kept apart from the manager so the layout can be
-//! reasoned about (and tested) without touching any Tauri API.
+//! Window/webview geometry.
 //!
-//! There is exactly one webview above the content: the *chrome* webview. It is
-//! usually just the 38px tab strip, but dshell's own panels (new tab, settings,
-//! onboarding) grow it into the window. Growing one region instead of overlaying
-//! a second window is what keeps this app free of z-order trouble: child
-//! webviews have no z-order API, so "what is on top" must never be a guess.
+//! One window holds three fixed regions, and **no two of them ever overlap**:
+//!
+//! ```text
+//!  y = 0      ┌──────────────────────────────────────────────┐
+//!             │ chrome webview — the tab strip (38 px)       │  drag region + window controls
+//!  y = 38     ├──────────────────────────────────────────────┤
+//!             │ panel webview — new tab / settings /         │  only while a panel is open
+//!             │ onboarding (≤ 380 px)                        │
+//!  y = 38+h   ├──────────────────────────────────────────────┤
+//!             │ content webview — the active DSH page        │
+//!             └──────────────────────────────────────────────┘
+//! ```
+//!
+//! Keeping the strip on screen at all times is not cosmetic. The window is
+//! frameless, so it can only be moved through a `data-tauri-drag-region`
+//! element, and that element lives in the strip. A panel that covered the window
+//! would make the window impossible to drag — and child webviews have no z-order
+//! API, so "who is on top" must never be a question. Separate regions answer it
+//! structurally instead of by stacking order.
+//!
+//! It also gives dshell's panels a title bar for free: the strip *is* the title
+//! bar, so a panel does not need one of its own.
 
-/// Height of the tab strip, in logical pixels.
+/// Height of the dshell tab strip, in logical pixels.
 pub const TAB_BAR_HEIGHT: f64 = 38.0;
-/// Chrome height while a panel is open. Modest on purpose: it must read as a
-/// dropdown anchored under the tab strip, not as a separate window.
-pub const PANEL_BAR_HEIGHT: f64 = 336.0;
+/// Height of the panel region while a panel is open. Content-sized on purpose:
+/// it should read as a dropdown anchored under the tab strip, not as another
+/// window.
+pub const PANEL_HEIGHT: f64 = 380.0;
 /// Extra logical pixels kept to the left of the window when a webview is parked
 /// out of sight. Generous so no multi-monitor geometry can slide it back in.
 pub const OFFSCREEN_FACTOR: f64 = 3.0;
@@ -32,42 +49,71 @@ impl Bounds {
     pub fn is_empty(&self) -> bool {
         self.width <= 0.0 || self.height <= 0.0
     }
+
+    /// True when the two rectangles share any pixel. The tests below use this to
+    /// assert the layout invariant rather than trusting the arithmetic.
+    pub fn overlaps(&self, other: &Bounds) -> bool {
+        self.x < other.x + other.width
+            && other.x < self.x + self.width
+            && self.y < other.y + other.height
+            && other.y < self.y + self.height
+    }
 }
 
-/// What the chrome webview currently occupies.
+/// What dshell's own webviews occupy, on top of the content area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChromeMode {
     /// Just the tab strip; content fills everything below.
     #[default]
     Strip,
-    /// Tab strip plus a panel; content is parked.
+    /// Tab strip plus the panel webview; content is parked.
     Panel,
-    /// The whole window (onboarding).
-    Full,
 }
 
-pub fn chrome_bounds(window_width: f64, window_height: f64, mode: ChromeMode) -> Bounds {
-    let height = match mode {
-        ChromeMode::Strip => TAB_BAR_HEIGHT,
-        ChromeMode::Panel => PANEL_BAR_HEIGHT.min(window_height),
-        ChromeMode::Full => window_height,
-    };
-    Bounds::new(0.0, 0.0, window_width, height)
+impl ChromeMode {
+    /// Everything below the tab strip that dshell owns. Content starts after
+    /// this, so a content webview can never cover the strip or the panel.
+    pub fn reserved_height(self, window_height: f64) -> f64 {
+        match self {
+            ChromeMode::Strip => TAB_BAR_HEIGHT,
+            ChromeMode::Panel => (TAB_BAR_HEIGHT + PANEL_HEIGHT).min(window_height),
+        }
+    }
 }
 
-/// Where the active content webview goes. The content webview must **never**
-/// overlap the tab strip: the strip carries the drag region, and a child webview
-/// on top of it would steal both the drag and the window-control hit testing.
-pub fn content_bounds(window_width: f64, window_height: f64, chrome_height: f64) -> Bounds {
+/// The tab strip. Present in every mode — this is the window's drag region.
+pub fn chrome_bounds(window_width: f64) -> Bounds {
+    Bounds::new(0.0, 0.0, window_width, TAB_BAR_HEIGHT)
+}
+
+/// The panel region, directly under the strip. `None` when no panel is open.
+pub fn panel_bounds(window_width: f64, window_height: f64, mode: ChromeMode) -> Option<Bounds> {
+    match mode {
+        ChromeMode::Strip => None,
+        ChromeMode::Panel => {
+            let available = (window_height - TAB_BAR_HEIGHT).max(0.0);
+            Some(Bounds::new(
+                0.0,
+                TAB_BAR_HEIGHT,
+                window_width,
+                PANEL_HEIGHT.min(available),
+            ))
+        }
+    }
+}
+
+/// Where the active content webview goes.
+pub fn content_bounds(window_width: f64, window_height: f64, mode: ChromeMode) -> Bounds {
+    let reserved = mode.reserved_height(window_height);
     Bounds::new(
         0.0,
-        chrome_height,
+        reserved,
         window_width,
-        (window_height - chrome_height).max(0.0),
+        (window_height - reserved).max(0.0),
     )
 }
 
-/// Where parked (inactive or panel-covered) content webviews go.
+/// Where parked content webviews go.
 ///
 /// Not `hide()` and not a zero size: a hidden webview is a candidate for
 /// background throttling, and DSH is a long-lived SSE session where a stalled
@@ -81,34 +127,63 @@ pub fn parked_bounds(window_width: f64) -> Bounds {
 mod tests {
     use super::*;
 
-    #[test]
-    fn content_never_overlaps_the_tab_strip() {
-        let chrome = chrome_bounds(1280.0, 820.0, ChromeMode::Strip);
-        assert_eq!(chrome.height, TAB_BAR_HEIGHT);
-        let content = content_bounds(1280.0, 820.0, chrome.height);
-        assert_eq!(content.y, TAB_BAR_HEIGHT);
-        assert_eq!(content.height, 820.0 - TAB_BAR_HEIGHT);
-    }
+    const W: f64 = 1280.0;
+    const H: f64 = 820.0;
 
     #[test]
-    fn panels_take_room_from_the_content_not_from_the_strip() {
-        let chrome = chrome_bounds(1280.0, 820.0, ChromeMode::Panel);
-        assert_eq!(chrome.height, PANEL_BAR_HEIGHT);
-        let content = content_bounds(1280.0, 820.0, chrome.height);
-        assert_eq!(content.y, PANEL_BAR_HEIGHT);
-        assert!(content.height > 0.0);
+    fn strip_is_present_in_every_mode() {
+        for mode in [ChromeMode::Strip, ChromeMode::Panel] {
+            let chrome = chrome_bounds(W);
+            assert_eq!(chrome.y, 0.0);
+            assert_eq!(chrome.height, TAB_BAR_HEIGHT);
+            assert!(!chrome.is_empty(), "{mode:?}");
+        }
     }
 
+    /// The invariant that keeps a frameless window draggable: whatever else is on
+    /// screen, the strip is never covered.
     #[test]
-    fn tiny_windows_do_not_produce_negative_heights() {
-        assert_eq!(content_bounds(100.0, 10.0, TAB_BAR_HEIGHT).height, 0.0);
-        assert_eq!(chrome_bounds(100.0, 10.0, ChromeMode::Panel).height, 10.0);
+    fn nothing_ever_overlaps_the_tab_strip() {
+        let chrome = chrome_bounds(W);
+        for mode in [ChromeMode::Strip, ChromeMode::Panel] {
+            assert!(!chrome.overlaps(&content_bounds(W, H, mode)), "{mode:?}");
+            if let Some(panel) = panel_bounds(W, H, mode) {
+                assert!(!chrome.overlaps(&panel), "{mode:?}");
+                assert!(!panel.overlaps(&content_bounds(W, H, mode)), "{mode:?}");
+            }
+        }
     }
 
     #[test]
     fn parked_views_are_far_out_of_sight() {
-        let parked = parked_bounds(1280.0);
+        let parked = parked_bounds(W);
         assert!(parked.x <= -2400.0);
-        assert!(parked.x + parked.width < 0.0);
+        assert!(!parked.overlaps(&chrome_bounds(W)));
+        assert!(!parked.overlaps(&content_bounds(W, H, ChromeMode::Panel)));
+    }
+
+    #[test]
+    fn panel_takes_room_from_the_content_not_from_the_strip() {
+        let panel = panel_bounds(W, H, ChromeMode::Panel).expect("panel mode has a panel");
+        assert_eq!(panel.y, TAB_BAR_HEIGHT);
+        assert_eq!(panel.height, PANEL_HEIGHT);
+        let content = content_bounds(W, H, ChromeMode::Panel);
+        assert_eq!(content.y, TAB_BAR_HEIGHT + PANEL_HEIGHT);
+        assert_eq!(content.height, H - TAB_BAR_HEIGHT - PANEL_HEIGHT);
+    }
+
+    #[test]
+    fn no_panel_bounds_when_no_panel_is_open() {
+        assert!(panel_bounds(W, H, ChromeMode::Strip).is_none());
+        assert_eq!(content_bounds(W, H, ChromeMode::Strip).y, TAB_BAR_HEIGHT);
+    }
+
+    #[test]
+    fn tiny_windows_do_not_produce_negative_heights() {
+        assert_eq!(content_bounds(100.0, 10.0, ChromeMode::Strip).height, 0.0);
+        assert_eq!(content_bounds(100.0, 10.0, ChromeMode::Panel).height, 0.0);
+        // A window shorter than strip+panel clamps instead of overflowing.
+        let panel = panel_bounds(100.0, 100.0, ChromeMode::Panel).unwrap();
+        assert_eq!(panel.height, 100.0 - TAB_BAR_HEIGHT);
     }
 }

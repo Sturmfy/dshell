@@ -30,10 +30,18 @@ pub struct TabSpec {
 pub enum ConnectionKind {
     /// A backend dshell starts and supervises.
     LocalSpawn {
-        workspace: String,
+        /// Where the backend process starts. This is only DSH's *initial*
+        /// workspace: DSH lets the user pick a project folder itself, so leaving
+        /// this empty is the normal case, and resolving it to the user's home
+        /// keeps DSH's own project selection meaningful. dshell must not pretend
+        /// to own that decision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
         #[serde(rename = "dshHome")]
         dsh_home: DshHomeSetting,
-        #[serde(rename = "dshAgentsHome", default)]
+        /// `None` means "follow the configured default", which is itself
+        /// "unset" unless the user changed it.
+        #[serde(rename = "dshAgentsHome", default, skip_serializing_if = "Option::is_none")]
         dsh_agents_home: Option<DshHomeSetting>,
         runtime: RuntimeSpec,
         #[serde(rename = "killOnClose", default)]
@@ -61,6 +69,15 @@ impl ConnectionKind {
 
     pub fn is_plaintext_remote(&self) -> bool {
         matches!(self, ConnectionKind::Remote { allow_plaintext: true, .. })
+    }
+
+    /// The working directory the user chose, if any. `None` means "let DSH
+    /// decide" — dshell then starts the backend in the user's home directory.
+    pub fn workspace(&self) -> Option<&str> {
+        match self {
+            ConnectionKind::LocalSpawn { workspace, .. } => workspace.as_deref(),
+            _ => None,
+        }
     }
 }
 
@@ -116,6 +133,10 @@ pub struct TabView {
     /// The resolved spawn command line (token-free), for the diagnostics panel.
     #[serde(default)]
     pub command_line: Option<String>,
+    /// Identifies "the same instance" (workspace + DSH_HOME). Two tabs sharing it
+    /// share a webview storage, which is what keeps a login across restarts.
+    #[serde(default)]
+    pub instance_key: String,
 }
 
 /// In-memory-only state for one tab.
@@ -168,12 +189,5 @@ impl TabRuntime {
 
     pub fn uptime_ms(&self) -> Option<u64> {
         self.started_at.map(|at| at.elapsed().as_millis() as u64)
-    }
-
-    pub fn workspace(&self) -> Option<&str> {
-        match &self.spec.connection {
-            ConnectionKind::LocalSpawn { workspace, .. } => Some(workspace),
-            _ => None,
-        }
     }
 }

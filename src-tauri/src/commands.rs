@@ -122,16 +122,15 @@ pub async fn active_tab(state: Shared<'_>) -> Result<Option<String>, Failure> {
     Ok(state.manager.active_id().await)
 }
 
-/// The chrome webview grows into the window while a dshell panel is open, and
-/// content webviews are parked meanwhile, so nothing depends on z-order.
+/// Show or hide dshell's panel.
+///
+/// `panel` is one of `newTab`, `settings`, `onboarding`, or `null` to close.
+/// The panel lives in its own webview *below* the tab strip, so the strip — and
+/// therefore the window's drag region and window buttons — stays visible and
+/// usable the whole time.
 #[tauri::command]
-pub async fn set_chrome_mode(state: Shared<'_>, mode: String) -> Result<(), Failure> {
-    let mode = match mode.as_str() {
-        "panel" => crate::tabs::layout::ChromeMode::Panel,
-        "full" => crate::tabs::layout::ChromeMode::Full,
-        _ => crate::tabs::layout::ChromeMode::Strip,
-    };
-    state.manager.set_chrome_mode(mode).await;
+pub async fn set_panel(state: Shared<'_>, panel: Option<String>) -> Result<(), Failure> {
+    state.manager.show_panel(panel.as_deref()).await;
     Ok(())
 }
 
@@ -142,7 +141,10 @@ pub async fn set_chrome_mode(state: Shared<'_>, mode: String) -> Result<(), Fail
 pub enum NewTabRequest {
     /// Start a backend with dshell's runtime manager.
     Launch {
-        workspace: String,
+        /// Optional. DSH picks the project folder itself, so this only exists to
+        /// give the backend a starting directory; unset means "use the default".
+        #[serde(default)]
+        workspace: Option<String>,
         runtime_id: String,
         #[serde(default)]
         dsh_home: Option<DshHomeSetting>,
@@ -176,23 +178,36 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
 
     match request {
         NewTabRequest::Launch { workspace, runtime_id, dsh_home, kill_on_close, title } => {
-            let workspace_path = PathBuf::from(&workspace);
-            // Validate before creating anything: a wrong working directory is a
-            // form error, not a tab state.
-            if !workspace_path.is_dir() {
-                return Err(Failure::new(
-                    FailureCode::WorkspaceMissing,
-                    format!("工作目录不存在：{workspace}"),
-                )
-                .with_detail("请选择一个已存在的目录，DSH 会把它当作会话的工作根目录。"));
-            }
-            if let Err(err) = crate::env::probe_writable(&workspace_path) {
-                return Err(Failure::new(
-                    FailureCode::WorkspaceMissing,
-                    format!("工作目录不可写：{workspace}"),
-                )
-                .with_detail(err.to_string()));
-            }
+            // A directory the user chose is validated here: a bad path is a form
+            // error, not a tab state. Leaving it empty is the normal case — DSH
+            // selects the project itself, and dshell starts the backend in the
+            // user's home directory meanwhile.
+            let chosen_workspace = workspace
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let workspace_path = match &chosen_workspace {
+                Some(chosen) => {
+                    let path = PathBuf::from(chosen);
+                    if !path.is_dir() {
+                        return Err(Failure::new(
+                            FailureCode::WorkspaceMissing,
+                            format!("工作目录不存在：{chosen}"),
+                        )
+                        .with_detail("留空即可，DSH 会在自己的界面里让你选择项目目录。"));
+                    }
+                    if let Err(err) = crate::env::probe_writable(&path) {
+                        return Err(Failure::new(
+                            FailureCode::WorkspaceMissing,
+                            format!("工作目录不可写：{chosen}"),
+                        )
+                        .with_detail(err.to_string()));
+                    }
+                    path
+                }
+                None => PathBuf::new(),
+            };
 
             let dsh_home_setting = dsh_home.unwrap_or_else(|| config.dsh_home.clone());
             // Resolve up-front so a bad DSH_HOME is reported by the form instead
@@ -207,11 +222,14 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
 
             let runtime_spec = resolve_runtime(&config, &runtime_id, &state).await?;
             let title = title.unwrap_or_else(|| {
-                let name = workspace_path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "本地".into());
-                format!("本地 · {name}")
+                match chosen_workspace.as_deref().and_then(|chosen| {
+                    PathBuf::from(chosen)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                }) {
+                    Some(name) => format!("本地 · {name}"),
+                    None => "本地".to_string(),
+                }
             });
 
             let spec = TabSpec {
@@ -219,7 +237,7 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
                 title,
                 display_origin: None,
                 connection: ConnectionKind::LocalSpawn {
-                    workspace: workspace.clone(),
+                    workspace: chosen_workspace.clone(),
                     dsh_home: dsh_home_setting,
                     dsh_agents_home: Some(config.dsh_agents_home.clone()),
                     runtime: runtime_spec,
@@ -230,12 +248,15 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
             let instance_home = state.instance_home_for(&spec);
             let instance_key = state.manager.open_tab(spec.clone(), instance_home).await?;
             state.manager.activate(Some(&id)).await;
-            state
-                .update_config(|config| {
-                    config.remember_workspace(&workspace_path);
-                })
-                .await
-                .ok();
+            // Only directories the user picked are remembered as projects.
+            if !workspace_path.as_os_str().is_empty() {
+                state
+                    .update_config(|config| {
+                        config.remember_workspace(&workspace_path);
+                    })
+                    .await
+                    .ok();
+            }
             state.persist_tabs().await;
 
             // Spawning runs in the background: npx on a cold cache can take
@@ -717,11 +738,15 @@ pub async fn set_config(state: Shared<'_>, config: Config) -> Result<Config, Fai
         .await
 }
 
+/// Finish the first-run wizard.
+///
+/// There is deliberately no "choose a working directory" here: DSH picks the
+/// project folder in its own UI, so asking for it up front would be dshell
+/// pretending to own a decision that is not its.
 #[tauri::command]
 pub async fn complete_onboarding(
     state: Shared<'_>,
     data_root: Option<String>,
-    workspace: Option<String>,
     write_env: Option<bool>,
 ) -> Result<RootView, Failure> {
     let mut notes: Vec<String> = Vec::new();
@@ -752,10 +777,6 @@ pub async fn complete_onboarding(
     state
         .update_config(|config| {
             config.onboarding_done = true;
-            if let Some(workspace) = &workspace {
-                config.workspace = Some(workspace.clone());
-                config.remember_workspace(&PathBuf::from(workspace));
-            }
         })
         .await?;
 

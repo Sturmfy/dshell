@@ -1,10 +1,15 @@
-// Builds dshell's chrome UI into `dist/`, which Tauri embeds into the binary.
+// Builds dshell's web UIs into `dist/`, which Tauri embeds into the binary.
 //
-// `web/index.html` is the tab-strip UI (the only webview with IPC access).
-// `web/shell/*.html` are the loading and error pages a content webview shows
-// before (or instead of) a DSH page. They are separate documents on purpose: the
-// error page must be able to `invoke` back into dshell, and only a
-// dshell-origin document can.
+// Three documents, deliberately separate:
+//
+//   index.html         the tab strip (chrome webview) — the window's title bar
+//   panel.html         dshell's panels (panel webview) — *below* the strip
+//   shell/*.html       the loading and failure pages a content webview shows
+//
+// The strip and the panel are separate webviews so the strip stays visible, and
+// therefore draggable, while a panel is open. The shell pages are separate
+// because they must be able to `invoke` back into dshell, and only a
+// dshell-origin document can — a DSH page never can.
 
 import { build } from 'esbuild';
 import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -17,35 +22,32 @@ const outDir = path.join(root, 'dist');
 const dev = process.argv.includes('--dev');
 
 const entryPoints = {
-  app: path.join(webDir, 'app.ts'),
+  strip: path.join(webDir, 'strip.ts'),
+  panel: path.join(webDir, 'panel.ts'),
   shell: path.join(webDir, 'shell.ts'),
 };
 
-/** Rewrite the `__PLACEHOLDER__` tokens the HTML sources carry. */
+/** Replace the `__TOKEN__` placeholders the HTML sources carry. */
 async function rewriteHtml() {
-  const appHtmlPath = path.join(outDir, 'index.html');
-  const appHtml = await readFile(appHtmlPath, 'utf8');
-  await writeFile(
-    appHtmlPath,
-    appHtml.replaceAll('__APP_JS__', './app.js').replaceAll('__STYLES__', './styles.css'),
-  );
+  const replacements = [
+    ['__APP_JS__', './strip.js'],
+    ['__PANEL_JS__', './panel.js'],
+    ['__SHELL_JS__', '../shell.js'],
+    ['__STYLES__', './styles.css'],
+  ];
 
-  const shellDir = path.join(outDir, 'shell');
-  for (const file of await readdir(shellDir)) {
-    if (!file.endsWith('.html')) continue;
-    const full = path.join(shellDir, file);
-    const html = await readFile(full, 'utf8');
-    const next = html
-      .replaceAll('__SHELL_JS__', '../shell.js')
-      .replaceAll('__STYLES__', '../styles.css');
-    if (next !== html) await writeFile(full, next);
+  const rewrite = async (file) => {
+    const html = await readFile(file, 'utf8');
+    let next = html;
+    for (const [token, value] of replacements) next = next.replaceAll(token, value);
+    if (next !== html) await writeFile(file, next);
+  };
+
+  await rewrite(path.join(outDir, 'index.html'));
+  await rewrite(path.join(outDir, 'panel.html'));
+  for (const file of await readdir(path.join(outDir, 'shell'))) {
+    if (file.endsWith('.html')) await rewrite(path.join(outDir, 'shell', file));
   }
-}
-
-async function copyStatic() {
-  await cp(path.join(webDir, 'index.html'), path.join(outDir, 'index.html'));
-  await cp(path.join(webDir, 'shell'), path.join(outDir, 'shell'), { recursive: true });
-  await cp(path.join(webDir, 'styles.css'), path.join(outDir, 'styles.css'));
 }
 
 async function main() {
@@ -60,12 +62,16 @@ async function main() {
     platform: 'browser',
     sourcemap: dev,
     minify: !dev,
-    // The IPC object is injected by the webview at runtime.
     logLevel: 'info',
   });
-  await copyStatic();
+
+  await cp(path.join(webDir, 'index.html'), path.join(outDir, 'index.html'));
+  await cp(path.join(webDir, 'panel.html'), path.join(outDir, 'panel.html'));
+  await cp(path.join(webDir, 'shell'), path.join(outDir, 'shell'), { recursive: true });
+  await cp(path.join(webDir, 'styles.css'), path.join(outDir, 'styles.css'));
+
   await rewriteHtml();
-  console.log(`[dshell] chrome UI built into dist/ (${dev ? 'dev' : 'release'})`);
+  console.log(`[dshell] web UIs built into dist/ (${dev ? 'dev' : 'release'})`);
 }
 
 main().catch((error) => {

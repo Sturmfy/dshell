@@ -1,0 +1,49 @@
+fix: keep the tab strip on screen, and stop asking for a project directory
+
+Two behaviour fixes from using the app.
+
+**The window could not be dragged while a panel was open.** dshell's panels grew
+the chrome webview into the whole window, which removed the tab strip — and with
+it the only `data-tauri-drag-region` element, i.e. the only way to move a
+frameless window. It also removed the window buttons, so a panel could not even
+be closed with the mouse.
+
+The window is now split into regions that never overlap:
+
+    chrome  (tab strip, 38px, always present)  <- drag region + window buttons
+    panel   (<=380px, only while a panel is open)
+    content (the active DSH page)
+
+The panel is a separate webview *below* the strip rather than an overlay. That
+costs one webview and buys three things: the strip is always draggable, the panel
+needs no title bar of its own, and nothing depends on child-webview stacking
+order — which has no API anyway. `tabs/layout.rs` asserts the invariant directly
+(`nothing_ever_overlaps_the_tab_strip`, `parked_views_are_far_out_of_sight`)
+instead of leaving it to arithmetic review.
+
+The strip and the panel now share `web/store.ts`, a single data layer fed by Rust,
+so the two views cannot drift apart. `web/app.ts` was split into `strip.ts` and
+`panel.ts` accordingly.
+
+**The first run asked for a "working directory", and that was wrong.** DSH picks
+the project folder itself; dshell's only influence is the backend process cwd.
+Presenting it as a required decision implied dshell owned project attribution.
+
+  * the wizard is now two steps: data location, then an environment report;
+  * "launch local" takes an optional *starting directory*, empty by default, and
+    the field says the project folder is chosen inside DSH;
+  * only a directory the user actually picked is remembered as a recent project —
+    the default is not a choice;
+  * `workspace` is `Option<String>` and omitted from `tabs.json` when unset, so a
+    restored tab does not invent one.
+
+Also fixed while verifying the above:
+
+  * a tab recorded without `dshAgentsHome` now falls back to the configured
+    default instead of "unset", so restoring tabs cannot silently change which
+    skills and instructions DSH sees;
+  * `Option` fields are skipped when serializing rather than written as `null`;
+  * two tabs on the same instance (same workspace + DSH_HOME) no longer collide on
+    one webview profile: the first keeps the shared directory that preserves a
+    login, the newcomer gets its own. Two live webviews cannot share one WebView2
+    profile.

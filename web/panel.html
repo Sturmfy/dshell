@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dshell</title>
+    <link rel="stylesheet" href="__STYLES__" />
+  </head>
+  <body class="panel-body">
+    <!--
+      dshell's panel host: new connection, settings, first-run wizard.
+
+      A separate webview directly under the tab strip, never an overlay, so the
+      strip keeps carrying the drag region and the window buttons. Which panel to
+      show arrives as `?panel=…`; Rust navigates here.
+    -->
+    <div id="panel" class="panel"></div>
+    <script type="module" src="__PANEL_JS__"></script>
+  </body>
+</html>

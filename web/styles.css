@@ -82,47 +82,22 @@ textarea {
 
 /* ------------------------------------------------------------- tab strip */
 
-.chrome-body {
+/*
+ * The strip is its own webview, 38px tall, sitting above everything. It is the
+ * window's title bar: this is where the drag region and the window buttons live,
+ * and it stays on screen while a panel is open.
+ */
+.strip-body {
   height: 100vh;
 }
 
 .chrome {
   display: flex;
   align-items: stretch;
-  height: var(--bar-h);
-  background: var(--bg-sunken);
-  border-bottom: 1px solid var(--border);
-}
-
-.chrome--panel {
-  height: 100vh;
-  flex-direction: column;
-  border-bottom: none;
-}
-
-.chrome--panel .chrome__row {
-  display: flex;
-  align-items: stretch;
-  height: var(--bar-h);
-  background: var(--bg-sunken);
-  border-bottom: 1px solid var(--border);
-  flex: 0 0 auto;
-}
-
-.chrome__row {
-  display: flex;
-  align-items: stretch;
   width: 100%;
-}
-
-.chrome--full {
-  height: 100vh;
-  flex-direction: column;
-  background: var(--bg);
-}
-
-.chrome--full .chrome__row {
-  display: none;
+  height: var(--bar-h);
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
 }
 
 .chrome__drag {
@@ -304,6 +279,13 @@ textarea {
   color: var(--fg);
 }
 
+/* The new-tab panel is open: the "+" is a toggle, so it shows its state. */
+.tab__new--active,
+.wc--active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .tab__overflow {
   flex: 0 0 auto;
   align-self: center;
@@ -346,12 +328,35 @@ textarea {
 
 /* ----------------------------------------------------------------- panel */
 
+/*
+ * The panel is its own webview, filling the region between the tab strip and the
+ * content area. Its host scrolls, so tall forms (onboarding, settings) never clip
+ * their action buttons off the bottom edge.
+ */
+.panel-body {
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
 .panel {
-  flex: 1 1 auto;
-  overflow: auto;
-  padding: 16px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
   background: var(--bg);
   user-select: text;
+}
+
+/* Keep the two webviews visually continuous: the strip draws its own bottom
+   border, so the panel must not add a second one. */
+.panel__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px 24px;
 }
 
 .panel__head {
@@ -359,6 +364,7 @@ textarea {
   align-items: baseline;
   gap: 10px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
 .panel__title {

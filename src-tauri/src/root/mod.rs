@@ -221,17 +221,28 @@ pub fn slug(label: &str) -> String {
 /// DSH's own default home (`~/.dsh`), used only to *preview* what DSH will pick
 /// when the user leaves `DSH_HOME` empty.
 pub fn preview_default_dsh_home() -> Option<PathBuf> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)?;
-    Some(home.join(".dsh"))
+    Some(user_home()?.join(".dsh"))
 }
 
 pub fn preview_default_agents_home() -> Option<PathBuf> {
-    let home = std::env::var_os("USERPROFILE")
+    Some(user_home()?.join(".agents"))
+}
+
+/// Where a local backend is started when the user did not choose a directory.
+///
+/// Deliberately neutral. DSH treats its process cwd as the *initial* workspace and
+/// lets the user pick a project itself, so dshell has no business guessing a
+/// project folder — it only needs somewhere harmless, and the home directory is
+/// exactly what a user gets from running `dsh web` in their own shell.
+pub fn default_workspace() -> Option<PathBuf> {
+    user_home()
+}
+
+fn user_home() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)?;
-    Some(home.join(".agents"))
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
 }
 
 #[cfg(test)]

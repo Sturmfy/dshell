@@ -21,6 +21,9 @@ export const events = {
   tabChanged: 'dshell://tab-changed',
   runtimeProgress: 'dshell://runtime-progress',
   shortcut: 'dshell://shortcut',
+  /** Rust tells both of dshell's webviews which panel is open, so the strip and
+   *  the panel can never disagree about it. */
+  panel: 'dshell://panel',
 } as const;
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -52,7 +55,9 @@ export const api = {
 
   listTabs: () => invoke<TabsSnapshot>('list_tabs'),
   activeTab: () => invoke<string | null>('active_tab'),
-  setChromeMode: (mode: 'strip' | 'panel' | 'full') => invoke<void>('set_chrome_mode', { mode }),
+  /** Opens/closes the panel webview. Rust owns the geometry. */
+  setPanel: (panel: 'newTab' | 'settings' | 'onboarding' | null) =>
+    invoke<void>('set_panel', { panel }),
 
   newTab: (request: unknown) =>
     invoke<{ id: string; instanceKey: string }>('new_tab', { request }),
@@ -92,11 +97,10 @@ export const api = {
   getConfig: () => invoke<Config>('get_config'),
   setConfig: (config: Config) => invoke<Config>('set_config', { config }),
 
-  completeOnboarding: (args: {
-    dataRoot?: string | null;
-    workspace?: string | null;
-    writeEnv?: boolean;
-  }) => invoke<AppInfo['root']>('complete_onboarding', args),
+  // No `workspace` here on purpose: DSH picks the project folder, so onboarding
+  // only decides where dshell keeps its own data.
+  completeOnboarding: (args: { dataRoot?: string | null; writeEnv?: boolean }) =>
+    invoke<AppInfo['root']>('complete_onboarding', args),
   removeEnvVar: () => invoke<void>('remove_env_var'),
   probeWritable: (path: string) => invoke<boolean>('probe_writable_path', { path }),
 

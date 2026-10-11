@@ -33,13 +33,36 @@ origin 就是 `http://127.0.0.1:PORT`，一切才成立。
 
 | 面 | 承载 | origin | 能访问 DSH `/api` | 有 IPC 权限 |
 |---|---|---|---|---|
-| **Chrome 面** | dshell 自己的选项卡条与面板 | `http://tauri.localhost` | ❌ 也不需要 | ✅ **只有它有** |
+| **Chrome 面** | dshell 的选项卡条 + 面板 | `http://tauri.localhost` | ❌ 也不需要 | ✅ **只有它们有** |
 | **Content 面** | DSH 原生前端，每选项卡一个 | `http://127.0.0.1:PORT` | ✅ 顶层文档，天然同源 | ❌ **一个都不给** |
 | **Core 面** | dshell 的 Rust 后端 | 进程内 | 只做无凭据探测（`GET /` 期望 401） | — |
 
 Content webview **不在任何 capability 里**：一旦它导航到 DSH origin，
 它就是一个 *remote* 上下文，什么都调不到。这既满足需求，也顺手关掉了
 「DSH 前端被替换/被诱导后拿到本地能力」这条路。
+
+### 窗口分区：互不重叠的四个区
+
+```
+ y = 0      ┌──────────────────────────────────┐
+            │ chrome webview — 选项卡条 38px    │  拖拽区 + 窗口按钮（永远在）
+ y = 38     ├──────────────────────────────────┤
+            │ panel webview — 新建/设置/首启    │  仅面板打开时（≤380px）
+ y = 38+h   ├──────────────────────────────────┤
+            │ content webview — 当前 DSH 页面   │
+            └──────────────────────────────────┘
+```
+
+**这是本应用唯一一段刻意"死板"的布局，因为它是窗口可拖动的前提。**
+无边框窗口只能通过 `data-tauri-drag-region` 元素拖动，而那个元素在选项卡条里；
+Tauri 子 webview 又没有 z-order API，所以"谁在上面"不能靠猜。
+把面板做成**下面独立的一个 webview** 而不是覆盖整窗的浮层，两个问题一起消失：
+
+- 选项卡条永远可见 → 窗口永远能拖、能最小化/最大化/关闭；
+- 面板不需要自己的标题栏（选项卡条就是标题栏），也不会盖住拖拽区。
+
+`tabs/layout.rs` 里的单元测试直接断言这条不变量（`nothing_ever_overlaps_the_tab_strip`），
+而不是靠算术正确性的人眼复核。
 
 ---
 
@@ -196,33 +219,40 @@ DSH 自己会 spawn 子进程（`pwsh` / `rg` / `git` …），而 Windows 的 `
 而是**移出可视区域**：隐藏会触发浏览器后台节流，而 DSH 是长连接 agent 会话，
 后台 tab 被节流意味着丢事件或审批请求卡住。
 
-代价是无法依赖 z-order（Tauri 子 webview 本来也没有 z-order API），所以
-**任何时刻只有一个 content webview 位于可见区域**，dshell 自己的面板也是
-「把 chrome webview 长高」而不是叠一层新 webview。
+代价是无法依赖 z-order（Tauri 子 webview 本来也没有 z-order API），所以布局靠
+**固定分区互不重叠**保证：任何时刻只有一个 content webview 在可见区，而
+dshell 自己的三个区（选项卡条、面板、内容）由 `tabs/layout.rs` 算出边界，
+彼此永不交叠。
 
 ---
 
 ## 8. 代码地图
 
 ```
-web/                 chrome UI（选项卡条 + 面板 + 启动/错误页）
-  app.ts             单状态对象 + 全量重渲染；所有变更都走 invoke
-  shell.ts           content webview 里的加载页 / 失败页
+web/                 dshell 自己的界面（三个独立文档）
+  strip.ts           选项卡条 —— 窗口的标题栏，永远在
+  panel.ts           面板：新建连接 / 设置 / 首启向导
+  store.ts           两个界面共享的唯一数据层（Rust 是唯一权威）
   ipc.ts             invoke 与事件的全部类型化封装（Rust 契约只声明一次）
+  shell.ts           content webview 里的加载页 / 失败页
 src-tauri/src/
   root/              ★ 数据根与四级回落链（唯一解析点）
   config.rs          config.json / tabs.json 模型与校验
   runtime/           ★ 四种后端的统一抽象 + Node 探测 + --help 能力探测
   dsh/               launch URL 解析（含 token 脱敏）、进程监管、无凭据探测
   tabs/              ★ 唯一允许碰 multi-webview API 的模块
+    layout.rs         几何计算：互不重叠的四区（纯函数，有断言测试）
     manager.rs        选项卡管理、webview 编排、事件泵
-    layout.rs         几何计算（纯函数，有测试）
     state.rs          TabSpec（落盘）/ TabRuntime（仅内存）
   commands.rs        invoke 面（全部 async）
   win.rs             Job object、广播环境变量变更
   env.rs             写 HKCU\Environment、可写性探测
   dialog.rs          原生目录/文件选择器
 ```
+
+**为什么 strip 与 panel 是两个 webview**：它们共享 `store.ts` 的数据层，但各自渲染。
+这样选项卡条在面板打开时仍然存在（可拖动、可关窗），而两个 webview 永远不会重叠 ——
+不需要依赖任何 z-order 行为。
 
 ### 三条代码级硬规则
 
@@ -232,6 +262,18 @@ src-tauri/src/
    `unstable` feature 的爆炸半径限制在一个可评审的文件里，升级或回退都只动这里。
 3. **数据根的解析只有一处**（`root/mod.rs`）。其他地方一律从 `AppState` 取值，
    不允许自己拼 `DSHELL_HOME`。
+
+### 职责边界：项目目录归 DSH
+
+**dshell 不选项目目录，也不假装选。** DSH 的进程 `cwd` 只是它的*初始*工作目录，
+项目和会话的工作根目录由 DSH 自己的界面决定。所以：
+
+- 首启向导**没有**「选择工作目录」这一步（只有数据位置 + 环境检查）；
+- 「启动本地」表单里的目录是**可选的**「起始目录」，留空即使用用户主目录，
+  说明文字明确写了「项目目录在 DSH 里选择」；
+- 只有用户真的选了目录，才会进「最近」列表 —— 默认值不算用户的选择。
+
+> 这不是小气，而是避免 dshell 制造一个假的必填项，让用户以为这里是决定项目归属的地方。
 
 ---
 
@@ -251,10 +293,13 @@ src-tauri/src/
 
 ## 10. 已知限制
 
-- **快捷键需要 chrome webview 有焦点**。焦点在 DSH 内容区时，`Ctrl+T` 之类会
-  被 DSH 页面自己接收。设计文档建议的"隐藏窗口菜单加速键"在 Tauri 2 的 Windows
-  实现里没有可靠路径，因此本版**不声称**解决了这一点；点击选项卡条即可把焦点
-  交回 dshell。这一点在 `docs/` 的设计里是被标为待验证的 S8。
+- **快捷键需要 dshell 自己的界面有焦点**（选项卡条或面板）。焦点在 DSH 内容区时，
+  `Ctrl+T` 之类会被 DSH 页面自己接收。设计文档建议的"隐藏窗口菜单加速键"在 Tauri 2
+  的 Windows 实现里没有可靠路径，因此本版**不声称**解决了这一点；点击选项卡条即可
+  把焦点交回 dshell。
+- **面板高度固定**（380px），不随内容自适应：chrome 面拿不到内容高度，
+  让 webview 跟着内容长高需要在 Rust 与前端之间来回同步尺寸，收益不值这个复杂度。
+  面板内部滚动。
 - **源码 checkout 模式**只做到"检测 + 能启动已构建的 checkout"，不做
   `pnpm install` / `pnpm run build` 的编排。DSH 的 workspace 规模让构建编排本身就是
   一个大特性，值得单独做。
@@ -271,9 +316,16 @@ src-tauri/src/
 - **保持不变**：三面分离、multi-webview、三步就绪判定、四后端统一抽象、
   `DSH_HOME` 默认不设置、作业对象、token 不落盘、`instance_key` 决定 webview
   存储位置。
+- **修正**：设计里「首启选主要工作目录，它就是 DSH 会话的 workspace 根」这条
+  **过度承诺**了。DSH 自己就会选项目目录，把进程 cwd 说成"会话的工作根目录"
+  会让用户以为项目归属由 dshell 决定。现在目录是可选的「起始目录」，
+  首启向导不再问它（见 §8「职责边界」）。
 - **简化**：设计里的 `tab-shell.html` / `tab-error.html` 两个资源合并为
   `shell/placeholder.html` / `shell/error.html`，且失败详情由页面**回调**
   Rust 获取（错误页是 dshell 自己的资源，所以它真的能 `invoke`）。
+- **修正**：设计里「面板把 chrome webview 长高」会**同时吃掉选项卡条**，
+  于是无边框窗口失去唯一的拖拽区、也失去窗口按钮。现在面板是选项卡条
+  **下面**独立的一个 webview（见 §2「窗口分区」）。
 - **放弃**：隐藏窗口菜单加速键（见上文「已知限制」）。
 - **单文件**：设计文档说"没有官方单文件方案"。本实现通过「Tauri 不启用 bundle
   + 前端资源 asset embedding + WebView2Loader 走静态导入库」达到单个 `.exe`。

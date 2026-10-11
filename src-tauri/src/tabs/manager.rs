@@ -40,6 +40,8 @@ use crate::tabs::layout;
 use crate::tabs::state::{phase, ConnectionKind, TabRuntime, TabSpec, TabView};
 
 pub const CHROME_LABEL: &str = "chrome";
+/// dshell's own panel (new tab / settings / onboarding), shown under the strip.
+pub const PANEL_LABEL: &str = "panel";
 pub const CHROME_PLACEHOLDER: &str = "shell/placeholder.html";
 pub const CHROME_ERROR: &str = "shell/error.html";
 
@@ -47,6 +49,8 @@ pub const SHORTCUT_EVENT: &str = "dshell://shortcut";
 pub const TABS_CHANGED_EVENT: &str = "dshell://tabs-changed";
 pub const TAB_CHANGED_EVENT: &str = "dshell://tab-changed";
 pub const RUNTIME_PROGRESS_EVENT: &str = "dshell://runtime-progress";
+/// Broadcast so the strip and the panel always agree on which panel is open.
+pub const PANEL_EVENT: &str = "dshell://panel";
 
 /// Readiness budget for a runtime that may have to be fetched first.
 const COLD_START_BUDGET: Duration = Duration::from_secs(300);
@@ -58,12 +62,14 @@ static TAB_COUNTER: AtomicU64 = AtomicU64::new(0);
 struct TabEntry {
     runtime: TabRuntime,
     webview: Webview,
-    /// Stable id of (workspace, DSH_HOME) — decides the webview data directory,
-    /// so reopening the same instance keeps its session cookie.
+    /// Stable id of (workspace, DSH_HOME) — the identity a login belongs to.
     instance_key: String,
     /// Where DSH's state will actually land for this tab, resolved once at
     /// creation so the UI never has to re-derive it.
     instance_home: Option<String>,
+    /// The webview storage this tab actually got. Usually the shared
+    /// `inst-<instance_key>` directory; a per-tab one when that was taken.
+    data_dir: PathBuf,
     /// One-shot: only the *first* finished load means "ready". DSH is an SPA, so
     /// switching sessions inside it never fires this again.
     first_load_seen: bool,
@@ -120,16 +126,36 @@ impl TabManager {
 
     fn apply_bounds(&self, entries: &HashMap<String, TabEntry>, active: Option<&str>, mode: layout::ChromeMode) {
         let (width, height) = self.window_logical_size();
-        let chrome = layout::chrome_bounds(width, height, mode);
+
+        // The strip is positioned first and in every mode: it is the window's
+        // only drag region, so losing it would make the window unmovable.
         if let Some(webview) = self.app.get_webview(CHROME_LABEL) {
-            let _ = webview.set_position(LogicalPosition::new(chrome.x, chrome.y));
-            let _ = webview.set_size(LogicalSize::new(chrome.width, chrome.height));
+            let bounds = layout::chrome_bounds(width);
+            let _ = webview.set_position(LogicalPosition::new(bounds.x, bounds.y));
+            let _ = webview.set_size(LogicalSize::new(bounds.width, bounds.height));
         }
+
+        // The panel webview exists only while a panel is open, and lives strictly
+        // between the strip and the content.
+        if let Some(webview) = self.app.get_webview(PANEL_LABEL) {
+            match layout::panel_bounds(width, height, mode) {
+                Some(bounds) => {
+                    let _ = webview.set_position(LogicalPosition::new(bounds.x, bounds.y));
+                    let _ = webview.set_size(LogicalSize::new(bounds.width, bounds.height));
+                }
+                None => {
+                    let parked = layout::parked_bounds(width);
+                    let _ = webview.set_position(LogicalPosition::new(parked.x, parked.y));
+                    let _ = webview.set_size(LogicalSize::new(parked.width, parked.height));
+                }
+            }
+        }
+
         for entry in entries.values() {
             // Only the active tab is ever inside the visible area, and only when
             // dshell is not showing a panel over it.
             let bounds = if active == Some(entry.id()) && mode == layout::ChromeMode::Strip {
-                layout::content_bounds(width, height, chrome.height)
+                layout::content_bounds(width, height, mode)
             } else {
                 layout::parked_bounds(width)
             };
@@ -145,9 +171,73 @@ impl TabManager {
             let mut current = self.chrome_mode.lock().await;
             *current = mode;
         }
-        let entries = self.tabs.lock().await;
-        let active = self.active.lock().await.clone();
-        self.apply_bounds(&entries, active.as_deref(), mode);
+        {
+            let entries = self.tabs.lock().await;
+            let active = self.active.lock().await.clone();
+            self.apply_bounds(&entries, active.as_deref(), mode);
+        }
+        if mode == layout::ChromeMode::Panel {
+            self.ensure_panel_webview().await;
+        }
+    }
+
+    /// Create the panel webview on first use.
+    ///
+    /// Its own webview rather than a taller chrome webview: the strip must stay
+    /// visible and draggable while a panel is open, and two adjacent webviews are
+    /// the only way to guarantee that without relying on stacking order.
+    async fn ensure_panel_webview(&self) {
+        if self.app.get_webview(PANEL_LABEL).is_some() {
+            return;
+        }
+        let (width, height) = self.window_logical_size();
+        let bounds = layout::panel_bounds(width, height, layout::ChromeMode::Panel)
+            .unwrap_or_else(|| layout::Bounds::new(0.0, layout::TAB_BAR_HEIGHT, width, 1.0));
+        let data_directory = self
+            .app
+            .try_state::<Arc<crate::AppState>>()
+            .map(|state| state.data_root.webview_data_dir().join("panel"))
+            .unwrap_or_else(|| PathBuf::from("panel"));
+        std::fs::create_dir_all(&data_directory).ok();
+
+        let result = self.window.add_child(
+            WebviewBuilder::new(PANEL_LABEL, WebviewUrl::App("panel.html".into()))
+                .data_directory(data_directory)
+                .disable_drag_drop_handler()
+                .focused(false),
+            LogicalPosition::new(bounds.x, bounds.y),
+            LogicalSize::new(bounds.width, bounds.height),
+        );
+        if let Err(err) = result {
+            process::debug_log(
+                &self
+                    .app
+                    .try_state::<Arc<crate::AppState>>()
+                    .map(|state| state.data_root.path.clone())
+                    .unwrap_or_default(),
+                &format!("panel webview creation failed: {err}"),
+            );
+        }
+    }
+
+    /// Point the panel webview at a panel. `None` closes it (parks it).
+    pub async fn show_panel(&self, panel: Option<&str>) {
+        let mode = if panel.is_some() {
+            layout::ChromeMode::Panel
+        } else {
+            layout::ChromeMode::Strip
+        };
+        self.set_chrome_mode(mode).await;
+        let _ = self.app.emit(
+            PANEL_EVENT,
+            serde_json::json!({ "panel": panel.unwrap_or("none") }),
+        );
+
+        let Some(panel) = panel else { return };
+        if let Some(webview) = self.app.get_webview(PANEL_LABEL) {
+            let url = asset_url(&self.app, "panel.html", &[("panel", panel.to_string())]);
+            let _ = webview.navigate(url);
+        }
     }
 
     pub async fn chrome_mode(&self) -> layout::ChromeMode {
@@ -211,6 +301,12 @@ impl TabManager {
     ///
     /// `instance_home` is the resolved DSH_HOME for this tab (or `None` when the
     /// user kept the system default) — `AppState` computes it from the data root.
+    ///
+    /// Two tabs on the same instance (same workspace and same DSH_HOME) would
+    /// collide on one webview data directory. That shared directory is exactly
+    /// what keeps a login across restarts, so it is kept for the first tab and
+    /// the newcomer gets its own — two live webviews sharing one profile is not
+    /// something WebView2 supports.
     pub async fn open_tab(
         &self,
         spec: TabSpec,
@@ -218,7 +314,16 @@ impl TabManager {
     ) -> Result<String, Failure> {
         let id = spec.id.clone();
         let label = Self::webview_label(&id);
-        let (instance_key, data_dir) = instance_identity(&spec, &self.app);
+        let (instance_key, base_dir) = instance_identity(&spec, &self.app);
+        let data_dir = {
+            let tabs = self.tabs.lock().await;
+            let taken = tabs.values().any(|entry| entry.data_dir == base_dir);
+            if taken {
+                base_dir.join(format!("session-{id}"))
+            } else {
+                base_dir
+            }
+        };
         std::fs::create_dir_all(&data_dir).ok();
 
         let app_for_title = self.app.clone();
@@ -231,7 +336,7 @@ impl TabManager {
             .window
             .add_child(
                 WebviewBuilder::new(label.clone(), WebviewUrl::App(CHROME_PLACEHOLDER.into()))
-                    .data_directory(data_dir)
+                    .data_directory(data_dir.clone())
                     .disable_drag_drop_handler()
                     .focused(false)
                     .on_document_title_changed(move |webview, title| {
@@ -282,6 +387,7 @@ impl TabManager {
             webview,
             instance_key: instance_key.clone(),
             instance_home,
+            data_dir,
             first_load_seen: false,
         };
         {
@@ -502,19 +608,28 @@ impl TabManager {
             None => return Err(Failure::new(FailureCode::Internal, "应用状态不可用")),
         };
 
-        let workspace_path = PathBuf::from(&workspace);
-        if !workspace_path.is_dir() {
-            return self
-                .fail(
-                    &id,
-                    Failure::new(
-                        FailureCode::WorkspaceMissing,
-                        format!("工作目录不存在：{workspace}"),
-                    )
-                    .with_action(Action::primary("new-tab", "重新选择")),
-                )
-                .await;
-        }
+        // The chosen directory is only DSH's *starting* point; DSH selects the
+        // project itself. When the user picked nothing, start in the home
+        // directory — the same place they would get from their own shell.
+        let workspace_path = match workspace.as_deref() {
+            Some(chosen) => {
+                let path = PathBuf::from(chosen);
+                if !path.is_dir() {
+                    return self
+                        .fail(
+                            &id,
+                            Failure::new(
+                                FailureCode::WorkspaceMissing,
+                                format!("工作目录不存在：{chosen}"),
+                            )
+                            .with_action(Action::primary("new-tab", "重新选择")),
+                        )
+                        .await;
+                }
+                path
+            }
+            None => crate::root::default_workspace().unwrap_or_else(|| state.data_root.path.clone()),
+        };
 
         // DSH_HOME is injected only when the user asked for it. The default is to
         // leave the variable unset so DSH keeps using the user's existing
@@ -527,16 +642,22 @@ impl TabManager {
             Ok(value) => value,
             Err(failure) => return self.fail(&id, failure).await,
         };
-        let agents_value = match dsh_agents_home.as_ref() {
-            Some(setting) => setting
-                .resolve(
-                    &state.data_root.path,
-                    &state.data_root.dsh_home_dir(),
-                    &workspace_path,
-                )
-                .unwrap_or(None),
-            None => None,
+        // `DSH_AGENTS_HOME` follows the same rule as `DSH_HOME`: unset means DSH
+        // resolves `~/.agents`, so the user's existing skills and instructions
+        // keep working. A tab recorded without the field (hand-written or from an
+        // older build) falls back to the configured default rather than to
+        // "unset", so restoring tabs cannot silently change behaviour.
+        let agents_setting = match dsh_agents_home.clone() {
+            Some(setting) => setting,
+            None => state.config_snapshot().await.dsh_agents_home,
         };
+        let agents_value = agents_setting
+            .resolve(
+                &state.data_root.path,
+                &state.data_root.dsh_home_dir(),
+                &workspace_path,
+            )
+            .unwrap_or(None);
 
         // Pre-flight writability: DSH's failure mode for an unwritable home is a
         // raw V8 crash with no structured signal and no log file.
@@ -947,19 +1068,8 @@ impl TabManager {
     /// The webview data directory for a tab, so the UI can show and open it.
     pub async fn data_dir(&self, id: &str) -> Option<String> {
         let tabs = self.tabs.lock().await;
-        tabs.get(id).map(|entry| {
-            self.app
-                .try_state::<Arc<crate::AppState>>()
-                .map(|state| {
-                    state
-                        .data_root
-                        .webview_data_dir()
-                        .join(format!("inst-{}", entry.instance_key))
-                        .to_string_lossy()
-                        .to_string()
-                })
-                .unwrap_or_default()
-        })
+        tabs.get(id)
+            .map(|entry| entry.data_dir.to_string_lossy().to_string())
     }
 
     // ------------------------------------------------------ event-loop helpers
@@ -1218,10 +1328,6 @@ pub fn current_state() -> Option<Arc<crate::AppState>> {
 fn build_view(entry: &TabEntry) -> TabView {
     let runtime = &entry.runtime;
     let spec = &runtime.spec;
-    let workspace = match &spec.connection {
-        ConnectionKind::LocalSpawn { workspace, .. } => Some(workspace.clone()),
-        _ => None,
-    };
 
     TabView {
         id: spec.id.clone(),
@@ -1229,7 +1335,10 @@ fn build_view(entry: &TabEntry) -> TabView {
         badge: spec.connection.badge().to_string(),
         phase: runtime.phase.clone(),
         origin: spec.display_origin.clone(),
-        workspace,
+        // Only a directory the user actually chose is reported. When unset, the
+        // real starting directory is DSH's own default and the UI says so rather
+        // than showing a path nobody picked.
+        workspace: spec.connection.workspace().map(str::to_string),
         dsh_home: entry.instance_home.clone(),
         dsh_home_effective: entry.instance_home.clone(),
         runtime: match &spec.connection {
@@ -1249,6 +1358,7 @@ fn build_view(entry: &TabEntry) -> TabView {
         exit_code: runtime.exit_code,
         ready: runtime.phase == phase::READY,
         command_line: runtime.command_line.clone(),
+        instance_key: entry.instance_key.clone(),
     }
 }
 
@@ -1263,7 +1373,15 @@ fn instance_identity(spec: &TabSpec, app: &AppHandle) -> (String, PathBuf) {
                 DshHomeSetting::Custom { path } => Some(PathBuf::from(path)),
                 _ => None,
             };
-            crate::root::instance_key(&PathBuf::from(workspace), home.as_deref())
+            // An unset workspace still has an identity: the default one. Without
+            // this, two "no directory chosen" tabs would look like two different
+            // instances and each would build its own storage.
+            let workspace = workspace
+                .as_deref()
+                .map(PathBuf::from)
+                .or_else(crate::root::default_workspace)
+                .unwrap_or_else(|| PathBuf::from(&spec.id));
+            crate::root::instance_key(&workspace, home.as_deref())
         }
         ConnectionKind::LocalAttach { url } | ConnectionKind::Remote { url, .. } => LaunchUrl::parse(url)
             .map(|parsed| crate::root::instance_key(&PathBuf::from(&parsed.origin), None))
