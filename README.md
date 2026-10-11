@@ -61,18 +61,37 @@ Content webview **不在任何 capability 里**：一旦它导航到 DSH origin�
 ```powershell
 npm install            # 只装 esbuild / typescript / @tauri-apps/api（类型与打包）
 npm run build          # 构建 UI + release 二进制
+npm run binary         # 把产物落到 release/dshell.exe，并断言它是单文件
 npm run app            # 开发运行（debug）
 npm run check          # clippy -D warnings
+npm test               # Rust 单元测试（cargo test）
 ```
 
-产物：`src-tauri/target/release/dshell.exe` —— **单个文件，拷走即可运行**。
-前端资源通过 Tauri 的 asset embedding 编进 exe，运行期不读任何磁盘资源目录。
+产物：`release/dshell.exe` —— **单个文件（约 3.7 MB），拷走即可运行**。
+前端资源通过 Tauri 的 asset embedding 编进 exe，运行期不读任何磁盘资源目录；
+WebView2Loader 走静态导入库，所以没有任何随附 DLL。`npm run binary` 会实际清点
+`release/` 目录并在出现多余文件时**失败**，而不是只在文档里声称。
 
-调试用的额外参数：
+### 上游契约回归
+
+dshell 依赖的上游行为（flag 集合、就绪行、token 兑换、前端标记、401 信号）由
+一个无依赖脚本断言，升级 DSH 后先跑它：
 
 ```powershell
-.\dshell.exe --data-root E:\tmp\dshell-data   # 覆盖数据根，便于多实例/回归测试
+node tools/dsh-contract-probe.mjs --dsh <dsh>/lib/bin.js
 ```
+
+### 诊断
+
+```powershell
+$env:DSHELL_DEBUG = '1'
+.\dshell.exe --data-root E:\tmp\dshell-data
+# → 在 <数据根>\logs\dshell-debug.log 里记录
+#   能力探测、spawn 命令行、就绪行、就绪校验结果、导航目标、子进程退出与日志尾部
+```
+
+`--data-root` 覆盖数据根，便于多实例并行与回归测试。失败详情也可以直接在
+选项卡的错误页里看到：可读原因 + 原始证据 + 下一步按钮。
 
 ---
 

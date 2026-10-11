@@ -8,9 +8,11 @@
     "dev": "node tools/build-ui.mjs --dev",
     "build:ui": "node tools/build-ui.mjs",
     "build": "node tools/build-ui.mjs && node tools/cargo.mjs build --release",
+    "binary": "node tools/package-binary.mjs",
     "app": "node tools/cargo.mjs run",
+    "test": "node tools/cargo.mjs test",
     "check": "node tools/cargo.mjs clippy --all-targets -- -D warnings",
-    "binary": "node tools/package-binary.mjs"
+    "probe": "node tools/dsh-contract-probe.mjs"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.12.3",
