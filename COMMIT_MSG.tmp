@@ -1,0 +1,30 @@
+fix: grant the window permissions the title bar actually needs
+
+The window could not be dragged and the close button did nothing, which turned
+out to be one cause, not two.
+
+`core:default` only grants the window plugin's *getters* — `allow-is-maximized`,
+`allow-inner-size`, `allow-theme` and friends. It does **not** grant
+`start_dragging`, `close`, `minimize`, `maximize`, `unmaximize` or
+`toggle-maximize`. So every one of those calls was rejected by the ACL, and
+because the frontend discarded the returned promise the failure was completely
+invisible: the window simply never moved and the close button did nothing.
+
+The capability now lists the window permissions dshell actually uses, with a
+comment explaining that `core:default` is not enough for any of them.
+
+Two things so this cannot come back silently:
+
+  * `web/ipc.ts` wraps each window operation and reports the error instead of
+    swallowing it, and the strip surfaces that as a visible toast. A silently
+    rejected invoke is the real trap here, not the missing permission.
+  * the strip no longer relies on a full-bleed drag overlay sitting under every
+    child in z-order. `data-tauri-drag-region` with a bare value only drags when
+    the click target is *exactly* that element, which one stray child element
+    defeats; the strip is now `="deep"` and its interactive zones opt out with
+    `="false"`, so the draggable area is the whole strip minus the things that
+    need clicks.
+
+Verified by rebuilding and checking that the compiled
+`src-tauri/gen/schemas/capabilities.json` contains the granted permissions,
+rather than assuming the JSON took effect.

@@ -86,6 +86,12 @@ textarea {
  * The strip is its own webview, 38px tall, sitting above everything. It is the
  * window's title bar: this is where the drag region and the window buttons live,
  * and it stays on screen while a panel is open.
+ *
+ * There is no separate absolutely-positioned drag overlay any more. The strip
+ * itself is the drag region (`data-tauri-drag-region="deep"` in the HTML), and
+ * the interactive children opt out with `="false"`. A full-bleed overlay would
+ * have to stay beneath every child in z-order to avoid swallowing their clicks,
+ * which is exactly the kind of arrangement that silently breaks.
  */
 .strip-body {
   height: 100vh;
@@ -98,13 +104,6 @@ textarea {
   height: var(--bar-h);
   background: var(--bg-sunken);
   border-bottom: 1px solid var(--border);
-}
-
-.chrome__drag {
-  position: absolute;
-  inset: 0;
-  height: var(--bar-h);
-  z-index: 0;
 }
 
 .chrome__spacer {

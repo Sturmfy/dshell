@@ -1,7 +1,18 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "chrome",
-  "description": "Only dshell's own two webviews get any IPC: the tab strip (`chrome`) and the panel below it (`panel`). Both stay on the dshell origin, so they are local contexts. Content webviews (`tab-*`) are deliberately absent from every capability: once one navigates to a DSH origin it is a *remote* context, and nothing there may reach dshell's commands.",
+  "description": "dshell's own two webviews: the tab strip (`chrome`) and the panel below it (`panel`). Both stay on the dshell origin, so they are local contexts. Content webviews (`tab-*`) are deliberately absent from every capability: once one navigates to a DSH origin it is a *remote* context, and nothing there may reach dshell's commands.",
   "webviews": ["chrome", "panel"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+
+    "core:window:allow-start-dragging",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-set-focus"
+  ]
 }

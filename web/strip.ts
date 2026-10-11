@@ -239,18 +239,29 @@ function render() {
       html: '&#9881;',
       onclick: () => void store.openPanel(store.state.panel === 'settings' ? 'none' : 'settings'),
     }),
-  );  controls.appendChild(
-    h('button', { class: 'wc', title: '最小化', html: '&#8212;', onclick: () => void win.minimize() }),
   );
   controls.appendChild(
-    h('button', { class: 'wc', title: '最大化', html: '&#9723;', onclick: () => void win.toggleMaximize() }),
+    h('button', {
+      class: 'wc',
+      title: '最小化',
+      html: '&#8212;',
+      onclick: () => void win.minimize().catch((error) => store.toast(String(error), true)),
+    }),
+  );
+  controls.appendChild(
+    h('button', {
+      class: 'wc',
+      title: '最大化',
+      html: '&#9723;',
+      onclick: () => void win.toggleMaximize().catch((error) => store.toast(String(error), true)),
+    }),
   );
   controls.appendChild(
     h('button', {
       class: 'wc wc--close',
       title: '关闭窗口',
       html: '&#10005;',
-      onclick: () => void win.close(),
+      onclick: () => void win.close().catch((error) => store.toast(String(error), true)),
     }),
   );
 

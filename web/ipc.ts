@@ -114,12 +114,27 @@ export const api = {
   notifyTabsChanged: () => invoke<void>('notify_tabs_changed'),
 };
 
+/**
+ * Window operations, i.e. `plugin:window|…`.
+ *
+ * These need explicit `core:window:allow-*` permissions — `core:default` grants
+ * only the getters. A missing permission fails *silently* from the user's point
+ * of view (an unhandled promise rejection), which is exactly how "the window can
+ * not be dragged and the close button does nothing" happens. So each call
+ * reports its failure instead of swallowing it.
+ */
+function windowCommand(name: string, action: () => Promise<void>): Promise<void> {
+  return action().catch((error: unknown) => {
+    console.error(`[dshell] window.${name} failed:`, error);
+    throw new Error(`window.${name} 失败：${String(error)}`);
+  });
+}
+
 export const win = {
-  minimize: () => getCurrentWindow().minimize(),
-  toggleMaximize: () => getCurrentWindow().toggleMaximize(),
-  close: () => getCurrentWindow().close(),
-  startDragging: () => getCurrentWindow().startDragging(),
-  isMaximized: () => getCurrentWindow().isMaximized(),
+  minimize: () => windowCommand('minimize', () => getCurrentWindow().minimize()),
+  toggleMaximize: () => windowCommand('toggleMaximize', () => getCurrentWindow().toggleMaximize()),
+  close: () => windowCommand('close', () => getCurrentWindow().close()),
+  startDragging: () => windowCommand('startDragging', () => getCurrentWindow().startDragging()),
 };
 
 export function listen<T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> {
