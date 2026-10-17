@@ -963,6 +963,16 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+/* A control that belongs to one row of the check table (the pnpm install
+   button). `align-self` overrides the row's baseline alignment, and the row
+   keeps its column so the table stays scannable. */
+.check__action {
+  flex: 0 0 auto;
+  align-self: center;
+  display: flex;
+  gap: 6px;
+}
+
 /* ------------------------------------------------------------------ pieces */
 
 .choices {
@@ -1128,6 +1138,14 @@ select {
 .btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* DSH's small button: the same control at row height, for an action that lives
+   inside a list row rather than in a footer. */
+.btn--sm {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .actions {

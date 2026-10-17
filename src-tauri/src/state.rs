@@ -21,6 +21,9 @@ pub struct AppState {
     pub config: Mutex<Config>,
     pub node: Mutex<Option<NodeInfo>>,
     pub environment: Mutex<Option<EnvironmentSnapshot>>,
+    /// Serialises "install pnpm": two of dshell's pages can offer the button, and
+    /// two concurrent global npm installs would fight over npm's own lock.
+    pub pnpm_install: Mutex<()>,
     pub tabs_file: PathBuf,
     /// Set when something could not be persisted or a fallback kicked in; the UI
     /// surfaces it instead of silently doing something else.
@@ -37,6 +40,7 @@ impl AppState {
             config: Mutex::new(config),
             node: Mutex::new(None),
             environment: Mutex::new(None),
+            pnpm_install: Mutex::new(()),
             tabs_file,
             boot_note: Mutex::new(note),
         }

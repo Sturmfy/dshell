@@ -19,6 +19,8 @@ import {
   pageFooter,
   pageFrame,
   pageHeader,
+  pnpmCheckRow,
+  pnpmInstallHint,
   row,
   section,
 } from './shared';
@@ -133,13 +135,17 @@ function renderEnvironment(main: HTMLElement, info: AppInfo): void {
     ),
   );
   list.appendChild(
-    checkRow(
-      info.environment.pnpm ? 'ok' : 'warn',
-      'pnpm',
-      info.environment.pnpm ?? '未找到（源码维护模式不可用）',
-    ),
+    pnpmCheckRow(info.environment, store.state.pnpmInstalling, () => void store.installPnpm()),
   );
   env.body.appendChild(list);
+
+  const hint = pnpmInstallHint(info.environment);
+  if (hint) env.body.appendChild(hint);
+  if (store.state.pnpmInstalling) {
+    env.body.appendChild(
+      h('p', { class: 'field__hint', text: '正在通过 npm 全局安装 pnpm…' }),
+    );
+  }
   env.body.appendChild(
     h(
       'div',

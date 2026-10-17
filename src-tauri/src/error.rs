@@ -15,6 +15,8 @@ pub enum FailureCode {
     DshHomeUnwritable,
     FrontendMissing,
     NpxInstallFailed,
+    /// `npm install -g pnpm` (the button on the environment report) failed.
+    PnpmInstallFailed,
     BuildFailed,
     DshFlagUnsupported,
     StartupTimeout,

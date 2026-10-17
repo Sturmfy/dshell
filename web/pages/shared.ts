@@ -5,6 +5,7 @@
 // elaborate would be more machinery than the problem needs.
 
 import type { PageStore } from '../store';
+import type { EnvironmentSnapshot } from '../types';
 
 export function h(
   tag: string,
@@ -50,15 +51,70 @@ export function isLoopback(url: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
 }
 
-export function checkRow(kind: 'ok' | 'warn' | 'bad', label: string, value: string): HTMLElement {
+/**
+ * One line of the environment report.
+ *
+ * `action` is the slot for a control that belongs *to that row* — currently only
+ * the pnpm install button. It sits at the end of the row so the table stays a
+ * table: a warning with a fix next to it reads as one statement, and the eye
+ * keeps its column.
+ */
+export function checkRow(
+  kind: 'ok' | 'warn' | 'bad',
+  label: string,
+  value: string,
+  action?: HTMLElement | null,
+): HTMLElement {
   const mark = kind === 'ok' ? '✓' : kind === 'warn' ? '⚠' : '✗';
-  return h(
+  const row = h(
     'li',
     { class: 'check' },
     h('span', { class: `check__mark check__mark--${kind}`, text: mark }),
     h('span', { text: label }),
     h('span', { class: 'check__value', text: value }),
   );
+  if (action) row.appendChild(h('span', { class: 'check__action' }, action));
+  return row;
+}
+
+/**
+ * The pnpm row: a version when it runs, and the one fix when it does not.
+ *
+ * dshell never runs `pnpm` — a source checkout needs it for the user's own
+ * `pnpm install` / `pnpm run build`. So "未找到" is not a blocker, but it is
+ * still a dead end on screen unless the report offers what the user would type
+ * anyway: `npm install -g pnpm`, which Rust runs with the npm it detected.
+ */
+export function pnpmCheckRow(
+  env: EnvironmentSnapshot,
+  installing: boolean,
+  onInstall: () => void,
+): HTMLElement {
+  const install = env.pnpmInstall ?? {};
+  if (env.pnpm) {
+    return checkRow('ok', 'pnpm', env.pnpm);
+  }
+  const value = install.npm
+    ? '未找到（源码维护模式不可用）'
+    : `未找到（源码维护模式不可用；${install.blocked ?? '没有可用的 npm，无法自动安装'}）`;
+  const button = install.npm
+    ? h('button', {
+        type: 'button',
+        class: 'btn btn--sm',
+        text: installing ? '正在安装…' : '安装 pnpm',
+        title: install.command ?? '',
+        disabled: installing ? 'disabled' : undefined,
+        onclick: onInstall,
+      })
+    : null;
+  return checkRow('warn', 'pnpm', value, button);
+}
+
+/** The install the button will run, quoted so the click has no surprises. */
+export function pnpmInstallHint(env: EnvironmentSnapshot): HTMLElement | null {
+  const command = env.pnpmInstall?.command;
+  if (env.pnpm || !command) return null;
+  return h('p', { class: 'field__hint', text: `将运行：${command}（会写入 npm 的全局前缀）` });
 }
 
 /**

@@ -64,6 +64,7 @@ pub fn main() {
     let builder = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
+            commands::install_pnpm,
             commands::list_tabs,
             commands::active_tab,
             commands::open_page,

@@ -100,6 +100,88 @@ fn root_view(state: &AppState) -> RootView {
     }
 }
 
+// ------------------------------------------------------------- environment
+
+/// Install pnpm globally with the npm dshell detected.
+///
+/// dshell never runs `pnpm` itself — a source checkout needs it for the user's
+/// own `pnpm install` / `pnpm run build`, which is exactly the orchestration
+/// this app does not do. So this is a convenience, not a dependency: the report
+/// already knows npm is present, and offering the one command that fixes the
+/// warning is the difference between a dead end and a fixed machine.
+///
+/// It returns the refreshed snapshot, because the interesting part of a
+/// successful install *is* the new report — the caller needs no second round
+/// trip to re-detect.
+#[tauri::command]
+pub async fn install_pnpm(app: AppHandle) -> Result<EnvironmentSnapshot, Failure> {
+    let state = state_of(&app)?;
+    if let Some(snapshot) = pnpm_ready(&state).await {
+        return Ok(snapshot);
+    }
+    // Both dshell pages can offer the button, and two concurrent global npm
+    // installs would fight over npm's own lock.
+    let _guard = state.pnpm_install.lock().await;
+    if let Some(snapshot) = pnpm_ready(&state).await {
+        return Ok(snapshot);
+    }
+
+    let node = state.node().await;
+    let plan = crate::runtime::node::plan_pnpm_install(node.as_ref(), false).await;
+    let Some(npm) = plan.npm_path() else {
+        let blocked = plan
+            .blocked
+            .clone()
+            .unwrap_or_else(|| "无法自动安装 pnpm".to_string());
+        return Err(Failure::new(FailureCode::NoNodeRuntime, blocked).with_detail(
+            "也可以在终端里自己运行 `npm install -g pnpm`，然后点「重新检测」。",
+        ));
+    };
+
+    let output = crate::runtime::node::install_pnpm(&npm).await?;
+    crate::dsh::process::debug_log(
+        &state.data_root.path,
+        &format!(
+            "npm install -g pnpm ok; output tail: {}",
+            output
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .take(10)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ),
+    );
+
+    let snapshot = state.environment(true).await;
+    if snapshot.pnpm.is_some() {
+        return Ok(snapshot);
+    }
+
+    // npm said it worked, yet nothing runnable showed up where dshell looks.
+    // Say where the shims actually went instead of leaving the user to hunt.
+    let prefix = crate::runtime::node::npm_global_prefix(&npm).await;
+    Err(Failure::new(
+        FailureCode::PnpmInstallFailed,
+        "npm 报告安装成功，但 pnpm 仍然无法运行",
+    )
+    .with_detail(match prefix {
+        Some(prefix) => format!(
+            "npm 的全局前缀是 {}。请确认该目录在这个用户的 PATH 里（新开的终端可见），\
+             然后点「重新检测」。",
+            prefix.display()
+        ),
+        None => "点「重新检测」再试一次；仍然失败时请在终端里运行 `npm install -g pnpm`。\
+                 已确认 npm 可用，安装本身应该没有问题。"
+            .to_string(),
+    }))
+}
+
+/// The cached snapshot, when pnpm already runs and there is nothing to install.
+async fn pnpm_ready(state: &AppState) -> Option<EnvironmentSnapshot> {
+    let snapshot = state.environment(false).await;
+    snapshot.pnpm.is_some().then_some(snapshot)
+}
+
 // --------------------------------------------------------------- tab list
 
 /// The whole tab picture in one call: the tabs and which one is visible. The

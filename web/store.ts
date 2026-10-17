@@ -36,6 +36,9 @@ export interface StoreState {
   /** The visible tab, as reported by Rust. Never inferred locally. */
   activeId: string | null;
   runtimes: RuntimeOption[];
+  /** True while `npm install -g pnpm` runs, so every button that offers it can
+   * show the same state instead of each page tracking its own. */
+  pnpmInstalling: boolean;
   toast: Toast | null;
 }
 
@@ -45,6 +48,7 @@ export class Store {
     tabs: [],
     activeId: null,
     runtimes: [],
+    pnpmInstalling: false,
     toast: null,
   };
 
@@ -123,6 +127,33 @@ export class Store {
       this.state.runtimes = [];
     }
     this.emit();
+  }
+
+  /**
+   * Install pnpm globally with the npm Rust detected.
+   *
+   * Rust is the authority on both halves: it decides whether an install is
+   * possible at all (no npm → it rejects with the reason), runs it, and answers
+   * with the **refreshed** report. Adopting that snapshot is what keeps the row
+   * from disagreeing with the machine it just changed — and it is why nothing
+   * here re-detects.
+   */
+  async installPnpm(): Promise<void> {
+    if (this.state.pnpmInstalling) return;
+    this.state.pnpmInstalling = true;
+    this.emit();
+    try {
+      const environment = await api.installPnpm();
+      if (this.state.info) this.state.info.environment = environment;
+      this.toast(environment.pnpm ? `pnpm ${environment.pnpm} 已可用` : '已安装 pnpm');
+    } catch (error) {
+      const failure = asFailure(error);
+      const detail = failure.detail ? `：${failure.detail}` : '';
+      this.toast(`${failure.message}${detail}`, true);
+    } finally {
+      this.state.pnpmInstalling = false;
+      this.emit();
+    }
   }
 
   // -------------------------------------------------------------- pages

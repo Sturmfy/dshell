@@ -10,6 +10,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import type {
   AppInfo,
   Config,
+  EnvironmentSnapshot,
   LogEntry,
   PageKind,
   RuntimeOption,
@@ -96,6 +97,14 @@ export const api = {
   tabFailureDetail: (tabId: string) => invoke<TabFailureDetail>('tab_failure_detail', { tabId }),
 
   listRuntimes: () => invoke<RuntimeOption[]>('list_runtimes'),
+  /**
+   * `npm install -g pnpm`, run by Rust with the npm it detected.
+   *
+   * Resolves to the **refreshed** environment snapshot, so the report updates
+   * from one round trip instead of re-detecting a second time. It rejects when
+   * npm is unavailable or the install failed, with npm's own output in `detail`.
+   */
+  installPnpm: () => invoke<EnvironmentSnapshot>('install_pnpm'),
   setExtraBinary: (path: string) => invoke<void>('set_extra_binary', { path }),
   addManagedInstall: (root: string, label?: string) =>
     invoke<{ id: string; label: string; root: string; mode: string }>('managed_install_add', {

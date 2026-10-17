@@ -75,10 +75,26 @@ export interface NodeInfo {
   versionIssue?: string | null;
 }
 
+/**
+ * How dshell could install `pnpm` itself.
+ *
+ * pnpm is one of the two things dshell reports but never runs: a source checkout
+ * needs it for the user's own `pnpm install` / `pnpm run build`. When it is
+ * missing and `npm` is present, `command` is the exact line the button runs.
+ */
+export interface PnpmInstall {
+  npm?: string | null;
+  npmVersion?: string | null;
+  command?: string | null;
+  /** Why the button is not offered, when it is not. */
+  blocked?: string | null;
+}
+
 export interface EnvironmentSnapshot {
   node?: NodeInfo | null;
   webview2Version?: string | null;
   pnpm?: string | null;
+  pnpmInstall?: PnpmInstall | null;
   notes: string[];
 }
 

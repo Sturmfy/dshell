@@ -24,6 +24,8 @@ import {
   pageFooter,
   pageFrame,
   pageHeader,
+  pnpmCheckRow,
+  pnpmInstallHint,
   section,
   wideRow,
 } from './shared';
@@ -243,13 +245,22 @@ function appendEnvironmentStep(main: HTMLElement, info: AppInfo): void {
     ),
   );
   list.appendChild(
-    checkRow(
-      info.environment.pnpm ? 'ok' : 'warn',
-      'pnpm',
-      info.environment.pnpm ?? '未找到（源码维护模式不可用）',
-    ),
+    pnpmCheckRow(info.environment, store.state.pnpmInstalling, () => void store.installPnpm()),
   );
   checks.body.appendChild(list);
+
+  // What the button would run, and what it means. Neither is a warning: pnpm is
+  // only ever needed by the user's own source checkout, never by dshell.
+  const hint = pnpmInstallHint(info.environment);
+  if (hint) checks.body.appendChild(hint);
+  if (store.state.pnpmInstalling) {
+    checks.body.appendChild(
+      h('p', {
+        class: 'field__hint',
+        text: '正在通过 npm 全局安装 pnpm，通常需要 10–30 秒，请不要关闭这个窗口。',
+      }),
+    );
+  }
   main.appendChild(checks.root);
 
   const summary = section('配置摘要');
