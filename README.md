@@ -100,6 +100,7 @@ npm run binary         # 把产物落到 release/dshell.exe，并断言它是单
 npm run app            # 开发运行（debug）
 npm run check          # clippy -D warnings
 npm test               # Rust 单元测试（cargo test）
+npm run icons          # logo-tile.svg → PNG → icon.ico（需要本机 Chrome/Edge）
 ```
 
 产物：`release/dshell.exe` —— **单个文件（约 3.7 MB），拷走即可运行**。

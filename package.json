@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "node tools/build-ui.mjs --dev",
     "build:ui": "node tools/build-ui.mjs",
-    "build": "node tools/build-ui.mjs && node tools/cargo.mjs build --release",
+    "build": "node tools/build-ui.mjs && node tools/make-icons.mjs && node tools/cargo.mjs build --release",
+    "icons": "node tools/render-icons.mjs && node tools/make-icons.mjs",
     "binary": "node tools/package-binary.mjs",
     "app": "node tools/cargo.mjs run",
     "test": "node tools/cargo.mjs test",
