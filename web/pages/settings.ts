@@ -266,9 +266,12 @@ function renderRuntimes(main: HTMLElement, info: AppInfo): void {
         class: 'btn',
         text: '添加本地维护目录…',
         onclick: async () => {
-          const picked = await api.pickDirectory(null);
-          if (!picked) return;
+          // The pick itself can fail (the OS may refuse a native dialog), so it
+          // sits inside the same try as the add: a dead button is worse than an
+          // error message.
           try {
+            const picked = await api.pickDirectory(null);
+            if (!picked) return;
             await api.addManagedInstall(picked);
             await store.refreshInfo();
             await store.refreshRuntimes();

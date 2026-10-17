@@ -804,13 +804,38 @@ textarea {
   color: var(--fg);
 }
 
+/* A chip that states the truth rather than offering an action (the cached npx
+   version a launch will actually use). */
+.chip--ok {
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+  color: var(--fg);
+}
+
 /* ------------------------------------------------------------------- cards */
 
-/* A responsive set of selectable cards — the three ways to connect. */
+/* A responsive set of selectable cards — the ways to connect. */
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 10px;
+}
+
+/* The first step has exactly two options, and they are the whole page: a wide
+   pair reads as a decision, where two 240px cards in a 880px column read as
+   buttons. */
+.cards--wide {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.cards--wide .card {
+  gap: 10px;
+  padding: 22px;
+}
+
+.cards--wide .card__title {
+  font-size: 16px;
+  line-height: 24px;
 }
 
 .card {
@@ -1368,6 +1393,127 @@ select {
 
 .toast--error {
   border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+}
+
+/* ------------------------------------------------------------------- modal */
+
+/*
+ * A modal, used by two things on the new-connection page: the advanced options
+ * and the blocking "preparing the runtime" state.
+ *
+ * It is an overlay *inside the page tab*, not a separate window: a page is a tab,
+ * so a dialog that escaped its own tab would float above every other tab and
+ * break the one-tab-one-document rule the whole app rests on.
+ */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--dsw-static-neutral-700) 42%, transparent);
+}
+
+/* The blocking variant has no dismiss affordance at all: the point is that the
+   user cannot act on a half-prepared runtime. */
+.modal-backdrop--blocking {
+  cursor: progress;
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(600px, 100%);
+  max-height: min(78vh, 720px);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-shadow-lv3);
+  overflow: hidden;
+}
+
+.modal__head {
+  flex: 0 0 auto;
+  padding: 16px 20px 10px;
+}
+
+.modal__title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.modal__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 20px 8px;
+}
+
+.modal__body > .section:first-child {
+  margin-top: 6px;
+}
+
+.modal__body--busy {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 18px;
+}
+
+.modal__foot {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 0.5px solid var(--border);
+}
+
+/* --------------------------------------------------------- blocking progress */
+
+.busy {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 4px;
+}
+
+.busy__spinner {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--dsw-alias-border-l3);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+.busy__text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.busy__stage {
+  margin: 0;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+/* The child's own output: monospace, capped, scrolled to the newest line by
+   `scrollTop` in the page — a build that prints nothing new looks stuck. */
+.busy__log {
+  max-height: 220px;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 17px;
 }
 
 .scroll {

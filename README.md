@@ -143,9 +143,10 @@ $env:DSHELL_DEBUG = '1'
 
 ```
 <数据根 = DSHELL_HOME>/
-├─ config.json          dshell 的偏好
-├─ tabs.json            选项卡列表（★ 不含任何 token）
+├─ config.json          dshell 的偏好（★ 记住的连接里含 token，见 §9）
+├─ tabs.json            选项卡列表（不含 token：spawn 的 token 只在内存）
 ├─ runtimes/            本地维护的运行时
+│  ├─ deepseek-harness/ 源码 checkout（默认放在 runtimes/ 下；仓库始终克隆进所选父目录的 deepseek-harness 子目录）
 │  ├─ npm/              npm 安装的 dsh
 │  ├─ npx-cache/        npm_config_cache 重定向目标
 │  ├─ node/             可选的便携 Node
@@ -162,6 +163,14 @@ $env:DSHELL_DEBUG = '1'
 4. `%LOCALAPPDATA%\dshell\`
 
 设置页**始终显示最终生效的是哪一层**。
+
+### `config.json` 的版本与迁移
+
+`config.json` 带 `schemaVersion`，加载时把旧文件迁移到当前默认值并**立刻写回一次**，
+所以文件与运行中的行为不会各说各话。目前只有一条迁移（`1 → 2`）：`killOnClose`
+从 `false` 变为 `true`。旧版的默认值就是 `false`，而 `update_config` 会把整份配置
+写盘 —— 于是任何动过设置的人磁盘上都有一个自己从未选择过的 `false`。迁移只做一次，
+之后用户在「高级选项」里取消勾选，`false` 就是用户自己的决定，会被原样保留。
 
 ### `DSH_HOME` 默认**不设置**
 
@@ -183,14 +192,55 @@ $env:DSHELL_DEBUG = '1'
 ## 5. 启动本地：四种后端，一个接口
 
 `runtime` 模块把四种启动方式抽象成同一个 `LaunchPlan`，因此**进程监管、stdout
-解析、就绪判定、错误分类只写一份**：
+解析、就绪判定、错误分类只写一份**。「新建连接」页只暴露其中两种（npx / 源码），
+另外两种留在设置与 `managed:` / `external` 运行时 id 上：
 
 | 方式 | spawn 形态 |
 |---|---|
-| npx | `npx --yes @deepseek-ai/dsh@<pin> web --no-open --port 0`（缓存重定向到数据根） |
-| 本地 npm 安装（推荐默认） | `<数据根>/runtimes/npm/node_modules/.bin/dsh.cmd web …` |
-| 本地维护的目录 | 已安装依赖树 → 直接跑它的入口；源码 checkout → `node <entry> web …` |
-| 其他后端二进制 | `<exe> web --no-open --port 0`（**完全不需要 Node**） |
+| npx | `npx --yes @deepseek-ai/dsh@<pin> web --no-open --port <端口>`（缓存重定向到数据根） |
+| 源码 checkout | `node --import tsx/esm apps/cli/src/bin.ts web --no-open --port <端口>` |
+| 本地 npm 安装 | `<数据根>/runtimes/npm/node_modules/.bin/dsh.cmd web …` |
+| 其他后端二进制 | `<exe> web --no-open --port <端口>`（**完全不需要 Node**） |
+
+`<端口>` 由 dshell 自己挑（`runtime/port.rs`），**不再传 `--port 0`**：交给系统
+分配意味着从 Windows 动态端口区间（本机是 1024–15000）里随便拿一个，而其中一部分
+端口被所有 Chromium 客户端禁止连接（IRC 的 6665–6669、X11 的 6000、Amanda 的
+10080 …）。一旦抽中，后端正常服务、页面却只能是 `ERR_UNSAFE_PORT`，看上去像装坏了。
+所以 dshell 在 20000–29999（不在常见动态端口区间内）里挑一个**不在 Chromium 受限
+端口表里**、并且当场 bind 验证过空闲的端口；真被占用的极端情况仍由既有的
+「端口被占用 → 换端口重试」失败分类兜住。就绪行读回来的端口若仍然受限（老版本 DSH
+不接受 `--port`），监视线会直接报一条可重试的失败，而不是把打不开的 URL 交给选项卡。
+
+### 启动前的准备（在新建连接页面上完成，不在选项卡里）
+
+「启动」不是一个瞬时动作：两种后端都可能需要先下载/构建。这些工作**在发起它们的
+页面上完成**，页面在准备期间**整页禁用**（模态遮罩、无取消按钮），进度通过
+`dshell://prepare-progress` 实时上报（阶段 + 子进程输出尾行）：
+
+| 运行时 | 准备流程 | 何时跳过 |
+|---|---|---|
+| npx | `npx --yes <spec> --version` 把包装进 `<数据根>/runtimes/npx-cache` | 目标版本已在缓存里（`state == ready`） |
+| 源码 | 在 `<所选父目录>/deepseek-harness` 里：`git clone --depth 1` → `git fetch` + 比较 → `git reset --hard FETCH_HEAD` → `pnpm install` → `pnpm run build`（前端产物仍缺时再 `pnpm run build:web`）→ 校验入口与 `apps/web/dist/index.html` | **从不跳过更新检查**；只有 `pnpm run build` 在"没拉到新提交且前端已构建"时省略 |
+
+**所选目录只是「父目录」，仓库永远克隆进其中的 `deepseek-harness` 子目录**：用户挑的
+往往是 `E:\projects` 这种本来就有别的项目的目录，dshell 不会占用它、不会清空它，
+"删掉源码版"也只是删掉那一个子目录。默认父目录是 `<数据根>/runtimes`。
+
+两条保护：**有未提交修改的 checkout 不会被 `reset --hard`**（跳过更新并提示）；
+**断网只降级为"按现有提交启动"**，不会把一个能用的 checkout 变得不可用。
+
+### 「已经有实例在跑」的处理
+
+本地启动前若 dshell 正在监管一个本地后端，则默认**拒绝**并列出它（可「切换过去」），
+用户勾选确认后才继续（`NewTabRequest::Launch.confirmExistingRunning`）。理由：两个
+`dsh web` 共用同一个 `DSH_HOME` 会并发读写 `profiles/` 与 `storages/`，官方未验证。
+
+### 发现本机已运行的实例
+
+「远程」这一步会扫一遍本机端口：`netstat -ano` 取 loopback 监听 → 对每个端口做一次
+**无 token** 的 `GET /`，只有 **401**（或 403）才算作 DSH。找到的实例分三类呈现：
+dshell 自己启动的（有选项卡 → 「切换过去」）、有历史记录的同 origin（有 token →
+「连接」）、其它（只能「填入地址」，因为 token 只存在于启动它的终端里）。
 
 **能力探测而非硬编码**：每次解析运行时前跑一次 `web --help`，只传该版本真的
 支持的 flag（0.2.0-rc.2 遇到 `--public-url` 会直接 exit 1），结果按运行时缓存。
@@ -251,7 +301,7 @@ dshell 自己的三个区（选项卡条、面板、内容）由 `tabs/layout.rs
 web/                 dshell 自己的界面（三个独立文档）
   strip.ts           选项卡条 —— 窗口的标题栏，永远在
   pages/             dshell 自己的页面，每个都是普通选项卡
-    new.ts             新建连接（启动本地 / 连接已有 / 连接远程）
+    new.ts             新建连接（步骤一：本地/远程 → 步骤二：运行时或地址）
     onboarding.ts      首启向导（唯一不可关闭的选项卡）
     settings.ts        设置
     shared.ts          三个页面共用的小工具 + bootPage 启动契约
@@ -260,9 +310,14 @@ web/                 dshell 自己的界面（三个独立文档）
   shell.ts           content webview 里的加载页 / 失败页
 src-tauri/src/
   root/              ★ 数据根与四级回落链（唯一解析点）
-  config.rs          config.json / tabs.json 模型与校验
-  runtime/           ★ 四种后端的统一抽象 + Node 探测 + --help 能力探测
+  config.rs          config.json / tabs.json 模型与校验（含记住的连接）
+  runtime/           ★ 四种后端的统一抽象
+    node.rs            Node / npm / pnpm / git 探测
+    npxcache.rs        npx 缓存里已有哪些版本 + npx 预热（下载/升级）
+    source.rs          源码 checkout 的检测与 clone/install/build 流水线
+    exec.rs            带输出流与超时的子进程执行（准备流水线共用）
   dsh/               launch URL 解析（含 token 脱敏）、进程监管、无凭据探测
+    scan.rs            本机已在监听的 DSH 实例发现
   tabs/              ★ 唯一允许碰 multi-webview API 的模块
     layout.rs         几何计算：互不重叠的两区（纯函数，有断言测试）
     manager.rs        选项卡管理、webview 编排、事件泵、页面选项卡的创建与去重
@@ -337,9 +392,10 @@ dshell 无法真的 `@import` 这些样式表：它们加载在另一个 webview
 项目和会话的工作根目录由 DSH 自己的界面决定。所以：
 
 - 首启向导**没有**「选择工作目录」这一步（只有数据位置 + 环境检查）；
-- 「启动本地」表单里的目录是**可选的**「起始目录」，留空即使用用户主目录，
-  说明文字明确写了「项目目录在 DSH 里选择」；
-- 只有用户真的选了目录，才会进「最近」列表 —— 默认值不算用户的选择。
+- 「新建连接 → 本地」**不问目录**：后端在用户主目录启动，说明文字明确写了
+  「项目目录在 DSH 里选择」；
+- 页面上唯一问路径的地方是**源码 checkout 的父目录**，那是 dshell 自己维护的
+  产物位置（仓库落在其中固定的 `deepseek-harness` 子目录），与项目无关。
 
 > 这不是小气，而是避免 dshell 制造一个假的必填项，让用户以为这里是决定项目归属的地方。
 
@@ -349,13 +405,15 @@ dshell 无法真的 `@import` 这些样式表：它们加载在另一个 webview
 
 | 边界 | 规则 |
 |---|---|
-| 凭据 | 启动 URL 的 token 只在 Core 内存与 content webview 的导航请求里；不落盘、不进日志（日志行写入前 `token=***` 脱敏） |
-| tabs.json | 只存 `TabSpec`，结构上不可能含 token（含 token 的 `launch_url` 在另一个类型里，且只在内存） |
+| 凭据（spawn 的实例） | 启动 URL 的 token 只在 Core 内存与 content webview 的导航请求里；不落盘、不进日志（日志行写入前 `token=***` 脱敏） |
+| 凭据（记住的连接） | **刻意例外**：`config.json` 的 `recentConnections` 保存用户粘贴过的完整 URL（含 token），否则「历史连接」无法一键重连。这与 DSH 自己把签名密钥明文放进 `$DSH_HOME/.credentials.yaml` 属同一威胁类别、同一台机器；条目可以逐条删除 |
+| tabs.json | 只存 `TabSpec`，结构上不可能含 spawn 的 token（含 token 的 `launch_url` 在另一个类型里，且只在内存） |
 | Content 面 | **不授予任何 capability**：`tab-*` 不匹配任何 capability 的 label，且它导航到的 DSH origin 也不是 local |
 | dshell 自己的页面 | 权限由 `page-*` label **与** local origin 两条同时决定；被导航到外部 origin 即失效 |
-| 明文远程 | 需显式勾选确认，且选项卡上**持续**显示 ⚠ |
+| 明文远程 | 需显式勾选确认，且选项卡上**持续**显示 ⚠。loopback 目标不算"远程"，也不需要确认 |
 | `DSH_HOME` | 只接受绝对路径；相对路径在提交时就被拒绝 |
 | `--host 0.0.0.0` | dshell 永不生成（DSH 本身也硬拒绝） |
+| 源码 checkout | `git reset --hard` 只对**干净**的 checkout 执行；有本地修改时跳过更新 |
 | 清空实例数据 | 用 `clear_all_browsing_data()`，而不是删目录 |
 
 ---
@@ -374,15 +432,18 @@ dshell 无法真的 `@import` 这些样式表：它们加载在另一个 webview
   按 DSH 的约定留了这个选择器。
 - **dshell 页面的选项卡标题是固定的**（首次配置 / 新建连接 / 设置），不跟随页面内容，
   也不可重命名 —— 重命名一个按类型重建的单例选项卡只会让下次启动时消失。
-- **源码 checkout 模式**只做到"检测 + 能启动已构建的 checkout"，不做
-  `pnpm install` / `pnpm run build` 的编排。DSH 的 workspace 规模让构建编排本身就是
-  一个大特性，值得单独做。唯一的例外是**装 pnpm 本身**：环境报告里若探测到了 `npm`
-  而缺 `pnpm`，那一行直接带一个「安装 pnpm」按钮（`npm install -g pnpm`，命令原样
+- **源码 checkout 模式**由 dshell 自己做安装与构建编排（见 §5）：clone / fetch / reset /
+  `pnpm install` / `pnpm run build` 全部流式上报，并且**只在用户按下「启动」时**执行 ——
+  检测路径（打开页面时）只读文件系统与 `git rev-parse`，不联网、不写盘。代价是这一页
+  可能真的等上十几分钟（DSH 约 350 个 workspace），所以它有进度、有输出尾行、并且
+  **整页禁用**而不是留一堆按钮让人误点。唯一的例外是**装 pnpm 本身**：环境报告里若探测到了
+  `npm` 而缺 `pnpm`，那一行直接带一个「安装 pnpm」按钮（`npm install -g pnpm`，命令原样
   显示在下面）—— 因为它是唯一一条"用户自己也要跑、且一条命令就能修好"的依赖，
   而一个不带出路的 `⚠` 只会让首启的人卡在这里。按钮只在点击时执行，不在任何检测
   路径上偷偷写用户的全局 npm 前缀。
-- **固定端口以保持登录态**是设置项，但默认关闭：`--port 0` 永不冲突，而 dshell
-  每次都会重新捕获 token，所以 `LocalSpawn` 本来就不需要"跨重启保持登录"。
+- **端口由 dshell 挑，不交给系统**（见 §5）：`--port 0` 会抽到 Chromium 禁止的端口
+  （6666 已经真实发生过），所以固定端口设置项目前仍不接线 —— 端口每次都是合法且空闲的
+  新值，而 dshell 每次都会重新捕获 token，`LocalSpawn` 本来就不需要"跨重启保持登录"。
 - **shell 页面（加载页 / 失败页）目前没有 IPC**：它们在 `tab-*` 内容 webview 里，
   而那个 label 不在任何 capability 中，所以加载页的进度轮询与失败页的按钮拿不到
   返回值。这是既有的独立问题，与选项卡模型无关，未在本次改动中处理。
@@ -421,3 +482,10 @@ dshell 无法真的 `@import` 这些样式表：它们加载在另一个 webview
 - **放弃**：隐藏窗口菜单加速键（见上文「已知限制」）。
 - **单文件**：设计文档说"没有官方单文件方案"。本实现通过「Tauri 不启用 bundle
   + 前端资源 asset embedding + WebView2Loader 走静态导入库」达到单个 `.exe`。
+
+---
+
+## 12. 许可
+
+MIT —— 见 [`LICENSE`](LICENSE)。
+

@@ -122,11 +122,30 @@ export interface Config {
   defaultRuntime: string;
   managedInstalls: { id: string; label: string; root: string; mode: string }[];
   extraBinary?: string | null;
+  /** The directory the source checkout is kept *in*; `null` = the default. */
+  sourceContainer?: string | null;
+  /** Remembered attach/remote targets, newest first. */
+  recentConnections?: RecentConnection[];
   language: string;
   backgroundMode: string;
   fixedPort: boolean;
   killOnClose: boolean;
   window: WindowConfig;
+}
+
+/**
+ * One remembered connection target.
+ *
+ * `url` keeps its `token=` parameter: a remembered entry that cannot reconnect
+ * would be a list of failures. See `src-tauri/src/config.rs` for why that is a
+ * deliberate trade rather than an oversight.
+ */
+export interface RecentConnection {
+  id: string;
+  url: string;
+  label: string;
+  remote: boolean;
+  lastUsedAt: number;
 }
 
 export interface RootView {
@@ -141,6 +160,97 @@ export interface RootView {
   envValue?: string | null;
   defaultDshHome?: string | null;
   defaultAgentsHome?: string | null;
+  /** `<data root>/runtimes` — the default *parent* of a first checkout. */
+  defaultSourceContainer: string;
+  /** The container in use (the default, or the user's directory). */
+  sourceContainer: string;
+}
+
+/**
+ * The two ways to start a local backend, and what each would do right now.
+ *
+ * Everything here is Rust's answer, including the numbers in the sentences: the
+ * page never guesses whether a download is needed.
+ */
+export interface CachedNpxPackage {
+  version: string;
+  path: string;
+  managed: boolean;
+}
+
+export interface NpxRuntime {
+  packageSpec: string;
+  targetVersion?: string | null;
+  cached: CachedNpxPackage[];
+  hit?: string | null;
+  state: 'ready' | 'install' | 'update' | 'blocked';
+  cacheDir: string;
+  /** Only filled when the (optional) network check ran. */
+  latestVersion?: string | null;
+  nodeVersion?: string | null;
+  blocked?: string | null;
+}
+
+export interface SourceCheckout {
+  root: string;
+  checkout: boolean;
+  installed: boolean;
+  frontendBuilt: boolean;
+  version?: string | null;
+  commit?: string | null;
+  branch?: string | null;
+  remote?: string | null;
+  dirty: boolean;
+  blocked?: string | null;
+}
+
+export interface SourceRuntime {
+  /** The checkout itself: `<container>/deepseek-harness`. */
+  status: SourceCheckout;
+  /** The directory the user picked, which *contains* the checkout. */
+  container: string;
+  /** The fixed subdirectory the clone lands in (`deepseek-harness`). */
+  checkoutName: string;
+  state: 'ready' | 'install' | 'blocked';
+  repo: string;
+  git?: string | null;
+  pnpm?: string | null;
+  nodeVersion?: string | null;
+  blocked?: string | null;
+}
+
+/** A DSH server already listening on this machine. */
+export interface RunningInstance {
+  origin: string;
+  port: number;
+  tabId?: string | null;
+  title?: string | null;
+  /** dshell holds a token for this origin (its own tab, or a saved entry). */
+  connectable: boolean;
+  notice?: string | null;
+}
+
+/** A backend dshell itself is supervising right now. */
+export interface RunningLocal {
+  tabId: string;
+  title: string;
+  phase: string;
+  pid?: number | null;
+  origin?: string | null;
+}
+
+export interface LocalRuntimeState {
+  npx: NpxRuntime;
+  source: SourceRuntime;
+  instances: RunningInstance[];
+  runningLocal: RunningLocal[];
+}
+
+/** One `dshell://prepare-progress` payload. */
+export interface PrepareProgress {
+  runtimeId: string;
+  stage: string;
+  message: string;
 }
 
 export interface AppInfo {

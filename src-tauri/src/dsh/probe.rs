@@ -145,6 +145,24 @@ fn frontend_missing(origin: &str, response: &HttpResponse) -> Failure {
     failure
 }
 
+/// Identify a server by port alone: is it a DSH that wants a token?
+///
+/// This is the local-instance scan's only question, and it is asked without a
+/// token — which is the point. DSH answers an unauthenticated `GET /` with
+/// **401**, and a 403 means a DSH whose trust fence does not accept the
+/// `Host` we used. Anything else (200, 404, nothing at all) is some other
+/// program, and must not be offered to the user as "一个正在运行的 dsh".
+///
+/// Returns the status code that identified it.
+pub async fn probe_dsh_server(origin: &str, timeout: Duration) -> Option<u16> {
+    let parsed = crate::dsh::url::LaunchUrl::parse(origin)?;
+    if parsed.scheme != "http" {
+        return None;
+    }
+    let response = get(&parsed.origin, "/", timeout, false).await.ok()?;
+    matches!(response.status, 401 | 403).then_some(response.status)
+}
+
 /// Probe an instance dshell did not start.
 pub async fn probe_remote(url: &str, timeout: Duration) -> Result<ProbeOutcome, Failure> {
     let Some(parsed) = crate::dsh::url::LaunchUrl::parse(url) else {

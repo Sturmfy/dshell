@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "Tabbed desktop shell for DeepSeek Harness — one binary, tabs on top of the unmodified DSH web UI",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "node tools/build-ui.mjs --dev",

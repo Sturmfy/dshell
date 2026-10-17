@@ -288,6 +288,39 @@ async fn supervise(
                     if let Some(launch) = url::parse_ready_line(&line) {
                         saw_ready = true;
                         debug_log(&debug_root, &format!("ready line: {}", launch.redacted()));
+                        // A port Chromium refuses to connect to can never be
+                        // shown in the tab, however healthy the server behind it
+                        // is — the webview reports ERR_UNSAFE_PORT before a
+                        // packet is sent. Report it here, where the retry lives,
+                        // instead of navigating to a URL that cannot load.
+                        if crate::runtime::port::is_browser_restricted_port(launch.port) {
+                            debug_log(
+                                &debug_root,
+                                &format!(
+                                    "port {} is forbidden to Chromium clients",
+                                    launch.port
+                                ),
+                            );
+                            let _ = events.send(LaunchEvent::Failed(
+                                Failure::new(
+                                    FailureCode::PortBindFailed,
+                                    format!(
+                                        "DSH 绑定到了 {}：浏览器禁止访问这个端口，标签页无法打开它",
+                                        launch.port
+                                    ),
+                                )
+                                .with_detail(
+                                    "该端口在 Chromium 的受限端口表里（net/base/port_util.cc），\
+                                     WebView2 在建立连接之前就会拒绝（ERR_UNSAFE_PORT），\
+                                     服务端本身是正常的。dshell 平时会自带一个合法端口（--port），\
+                                     出现这条说明这个后端没有接受它。",
+                                )
+                                .with_stage("startup")
+                                .with_action(Action::primary("retry-free-port", "换一个端口重试"))
+                                .with_defaults(),
+                            ));
+                            return;
+                        }
                         let _ = events.send(LaunchEvent::Ready(launch));
                     }
                 }

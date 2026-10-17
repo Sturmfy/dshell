@@ -157,9 +157,17 @@ function appendDataRootStep(main: HTMLElement, info: AppInfo): void {
       class: 'btn',
       text: '浏览',
       onclick: async () => {
-        const picked = await api.pickDirectory(state.root || null);
-        if (picked) {
-          state.root = picked;
+        try {
+          const picked = await api.pickDirectory(state.root || null);
+          if (picked) {
+            state.root = picked;
+            state.error = null;
+            render();
+          }
+        } catch (error) {
+          // The native picker can be refused by the OS; say so rather than
+          // leaving the button looking dead.
+          state.error = asFailure(error).message;
           render();
         }
       },

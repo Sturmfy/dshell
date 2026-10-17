@@ -18,6 +18,15 @@ pub enum FailureCode {
     /// `npm install -g pnpm` (the button on the environment report) failed.
     PnpmInstallFailed,
     BuildFailed,
+    /// A locally started backend is already running; starting another one would
+    /// put two `dsh web` processes on the same `DSH_HOME`.
+    InstanceAlreadyRunning,
+    /// The "source" runtime has no usable checkout yet.
+    SourceMissing,
+    /// clone / fetch / pnpm install / build of a source checkout failed.
+    SourcePrepareFailed,
+    /// `git` is not installed, so the source runtime cannot be maintained.
+    GitUnavailable,
     DshFlagUnsupported,
     StartupTimeout,
     PortBindFailed,

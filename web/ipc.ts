@@ -11,8 +11,10 @@ import type {
   AppInfo,
   Config,
   EnvironmentSnapshot,
+  LocalRuntimeState,
   LogEntry,
   PageKind,
+  RunningInstance,
   RuntimeOption,
   TabFailureDetail,
   TabView,
@@ -22,6 +24,8 @@ export const events = {
   tabsChanged: 'dshell://tabs-changed',
   tabChanged: 'dshell://tab-changed',
   runtimeProgress: 'dshell://runtime-progress',
+  /** Runtime preparation before a launch: `{ runtimeId, stage, message }`. */
+  prepareProgress: 'dshell://prepare-progress',
   shortcut: 'dshell://shortcut',
 } as const;
 
@@ -97,6 +101,32 @@ export const api = {
   tabFailureDetail: (tabId: string) => invoke<TabFailureDetail>('tab_failure_detail', { tabId }),
 
   listRuntimes: () => invoke<RuntimeOption[]>('list_runtimes'),
+  /**
+   * The two local runtimes as they are right now: whether npx already has the
+   * package, what a source checkout looks like, and which DSH servers are
+   * already listening.
+   *
+   * `deep` additionally asks the registry for dist-tags — one network round trip
+   * that the page makes after its first paint, never before.
+   */
+  localRuntimeStatus: (deep = false) =>
+    invoke<LocalRuntimeState>('local_runtime_status', { deep }),
+  /**
+   * Do the slow half of a local launch *now*, on the page that asked for it:
+   * npx download/upgrade, or clone + `pnpm install` + build for a checkout.
+   *
+   * Progress arrives on `events.prepareProgress`; the returned state is the
+   * refreshed one, so the caller never re-detects after a long operation.
+   */
+  prepareRuntime: (runtimeId: string, sourceRoot?: string | null) =>
+    invoke<LocalRuntimeState>('prepare_runtime', {
+      runtimeId,
+      sourceRoot: sourceRoot ?? null,
+    }),
+  /** Rescan this machine for DSH servers (newest picture of the same list). */
+  scanInstances: () => invoke<RunningInstance[]>('scan_instances'),
+  /** Drop one remembered connection. */
+  forgetConnection: (id: string) => invoke<void>('forget_connection', { id }),
   /**
    * `npm install -g pnpm`, run by Rust with the npm it detected.
    *

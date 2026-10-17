@@ -12,8 +12,12 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Action, Failure, FailureCode};
 use crate::runtime::node::NodeInfo;
 
+pub mod exec;
 pub mod help;
 pub mod node;
+pub mod npxcache;
+pub mod port;
+pub mod source;
 
 pub const DEFAULT_PORT_TIMEOUT: Duration = Duration::from_secs(90);
 /// First-ever npx resolution downloads ~450 MB (26k files); the design measured
@@ -144,8 +148,10 @@ pub fn web_args(flags: &Flags, supported: &help::FlagSupport) -> Vec<String> {
         }
         None if supported.port => {
             args.push("--port".into());
-            // 0 lets the OS pick, which removes the port-in-use class of failure
-            // entirely; the real port is read back from the readiness line.
+            // Last resort only: `resolve_port` normally hands DSH a concrete,
+            // legal port, so this arm is reached only when the picker found
+            // nothing free. 0 lets the OS pick, and the readiness guard reports
+            // a forbidden result instead of leaving a blank tab behind.
             args.push("0".into());
         }
         _ => {}
@@ -165,6 +171,26 @@ pub fn web_args(flags: &Flags, supported: &help::FlagSupport) -> Vec<String> {
     args
 }
 
+/// Decide the port this launch asks DSH for.
+///
+/// A launch never asks for "any port": the OS answers from the dynamic range,
+/// which includes ports Chromium refuses to connect to at all (6666 was the
+/// observed one), and the tab then dies with `ERR_UNSAFE_PORT` while the backend
+/// behind it is perfectly healthy. dshell picks a legal free port itself — see
+/// [`port`] — and keeps a port the caller asked for unless no browser would
+/// accept it.
+fn resolve_port(flags: &Flags, supported: &help::FlagSupport) -> Flags {
+    let mut resolved = flags.clone();
+    if !supported.port {
+        return resolved;
+    }
+    let usable = resolved
+        .port
+        .filter(|requested| *requested != 0 && !port::is_browser_restricted_port(*requested));
+    resolved.port = usable.or_else(port::pick_listen_port);
+    resolved
+}
+
 /// Resolve a runtime spec into a concrete launch plan.
 pub async fn resolve(
     spec: &RuntimeSpec,
@@ -174,7 +200,8 @@ pub async fn resolve(
     flags: &Flags,
 ) -> Result<LaunchPlan, Failure> {
     let supported = probe_flags(spec, node, data_root).await;
-    let args = web_args(flags, &supported);
+    let flags = resolve_port(flags, &supported);
+    let args = web_args(&flags, &supported);
 
     match spec {
         RuntimeSpec::Npx { package_spec } => {
@@ -237,21 +264,32 @@ pub async fn resolve(
                         .with_detail(format!("期望存在 {}", entry.display()))
                         .with_action(Action::primary("build-source-runtime", "构建")));
                     }
-                    // Source launches go through tsx's ESM-only loader hook.
-                    let tsx = root
-                        .join("node_modules")
-                        .join("tsx")
-                        .join("dist")
-                        .join("esm")
-                        .join("index.mjs");
-                    let mut plan = LaunchPlan::new(node.node.clone(), cwd);
-                    if tsx.is_file() {
-                        plan = plan.args(["--import".to_string(), tsx.to_string_lossy().to_string()]);
-                    }
-                    Ok(plan
+                    // A source launch is `node --import <tsx loader> <entry> web …`,
+                    // exactly what the repository's own `pnpm dsh` runs. Three
+                    // details make it work from a *foreign* cwd, which is the
+                    // normal case here because DSH treats its cwd as the session
+                    // workspace and dshell starts it in the user's directory:
+                    //
+                    // * the entry is passed absolute, so cwd cannot change what runs;
+                    // * the loader is passed as a `file://` URL — `node --import`
+                    //   parses a bare `E:\…` as a URL with scheme `e:` and refuses it;
+                    // * `TSX_TSCONFIG_PATH` names the checkout's tsconfig, because
+                    //   tsx applies its `paths` mapping relative to the tsconfig it
+                    //   finds, and DSH's sources need that mapping to resolve
+                    //   `@deepseek-ai/*` to each workspace's `src`.
+                    let entry = std::path::absolute(&entry).unwrap_or(entry);
+                    let mut plan = LaunchPlan::new(node.node.clone(), cwd)
+                        .args(source_prefix(&root))
                         .args([entry.to_string_lossy().to_string()])
                         .args(args)
-                        .env("NODE_OPTIONS", None))
+                        .env("NODE_OPTIONS", None);
+                    if root.join("tsconfig.json").is_file() {
+                        plan = plan.env(
+                            "TSX_TSCONFIG_PATH",
+                            Some(root.join("tsconfig.json").to_string_lossy().to_string()),
+                        );
+                    }
+                    Ok(plan)
                 }
             }
         }
@@ -282,6 +320,36 @@ pub fn require_node(node: Option<&NodeInfo>) -> Result<&NodeInfo, Failure> {
 pub const NPM_ENTRY: &str = "node_modules/.bin/dsh.cmd";
 pub const NPM_ENTRY_ALT: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
 pub const SOURCE_ENTRY: &str = "apps/cli/src/bin.ts";
+
+/// The `--import` prefix a source launch needs, empty when tsx is not installed.
+///
+/// `node --import` resolves its argument as a URL specifier, so a Windows
+/// absolute path arrives as scheme `e:` and is rejected (`ERR_UNSUPPORTED_ESM_URL_SCHEME`).
+/// A `file://` URL is the spelling that works from any cwd.
+pub fn source_prefix(root: &Path) -> Vec<String> {
+    let tsx = root
+        .join("node_modules")
+        .join("tsx")
+        .join("dist")
+        .join("esm")
+        .join("index.mjs");
+    if !tsx.is_file() {
+        return Vec::new();
+    }
+    vec!["--import".to_string(), file_url(&tsx)]
+}
+
+fn file_url(path: &Path) -> String {
+    let text = std::path::absolute(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/");
+    if text.starts_with('/') {
+        format!("file://{text}")
+    } else {
+        format!("file:///{text}")
+    }
+}
 
 /// The executable entry of an installed (npm/pnpm) tree, if any.
 fn npm_entry(root: &Path) -> Option<PathBuf> {
@@ -355,6 +423,17 @@ pub async fn probe_flags(
         let cache = data_root.join("runtimes").join("npx-cache");
         cmd.env("npm_config_cache", cache);
     }
+    // The source probe must be run the way the launch is, or it would fail on
+    // the tsconfig `paths` mapping and silently fall back to assumed flags.
+    if let RuntimeSpec::Managed { root, mode: ManagedMode::Source } = spec {
+        let root = PathBuf::from(root);
+        if root.join("tsconfig.json").is_file() {
+            cmd.env(
+                "TSX_TSCONFIG_PATH",
+                root.join("tsconfig.json").to_string_lossy().to_string(),
+            );
+        }
+    }
     #[cfg(windows)]
     cmd.creation_flags(crate::win::CREATE_NO_WINDOW);
 
@@ -406,8 +485,11 @@ fn bare_prefix(spec: &RuntimeSpec) -> Vec<String> {
     match spec {
         RuntimeSpec::Npx { package_spec } => vec!["--yes".into(), package_spec.clone()],
         RuntimeSpec::Managed { root, mode: ManagedMode::Source } => {
-            let entry = Path::new(root).join(SOURCE_ENTRY);
-            vec![entry.to_string_lossy().to_string()]
+            let root = Path::new(root);
+            let entry = root.join(SOURCE_ENTRY);
+            let mut prefix = source_prefix(root);
+            prefix.push(entry.to_string_lossy().to_string());
+            prefix
         }
         _ => Vec::new(),
     }
@@ -459,11 +541,85 @@ mod tests {
         );
     }
 
+    /// The regression this fix exists for: a launch must never leave the port
+    /// choice to the OS. The dynamic range contains ports Chromium refuses
+    /// outright, and 6666 — handed to DSH on 2026-10-17 — put a healthy backend
+    /// behind a tab that could only show `ERR_UNSAFE_PORT`.
+    #[test]
+    fn a_launch_asks_for_a_concrete_browser_safe_port() {
+        let flags = Flags { no_open: true, port: None, ..Default::default() };
+        let supported = help::FlagSupport::assumed();
+        let resolved = resolve_port(&flags, &supported);
+        let picked = resolved.port.expect("a picked port");
+        assert!((port::PICK_START..=port::PICK_END).contains(&picked), "{picked}");
+        assert!(!port::is_browser_restricted_port(picked));
+        assert_eq!(
+            web_args(&resolved, &supported),
+            vec![
+                "web".to_string(),
+                "--no-open".to_string(),
+                "--port".to_string(),
+                picked.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_requested_port_is_kept_unless_the_browser_would_refuse_it() {
+        let supported = help::FlagSupport::assumed();
+        let kept = resolve_port(&Flags { port: Some(9808), ..Default::default() }, &supported);
+        assert_eq!(kept.port, Some(9808));
+
+        let replaced = resolve_port(&Flags { port: Some(6666), ..Default::default() }, &supported);
+        let picked = replaced.port.expect("a picked port");
+        assert_ne!(picked, 6666);
+        assert!(!port::is_browser_restricted_port(picked));
+    }
+
+    /// A DSH too old for `--port` keeps its own port: inventing a flag it does
+    /// not know would turn a working launch into `unknown option`.
+    #[test]
+    fn a_backend_without_port_support_is_asked_for_no_port() {
+        let supported =
+            help::FlagSupport { no_open: true, port: false, ..Default::default() };
+        let resolved = resolve_port(&Flags { port: Some(6666), ..Default::default() }, &supported);
+        assert_eq!(web_args(&resolved, &supported), vec!["web", "--no-open"]);
+    }
+
     #[test]
     fn managed_installed_tree_is_detected() {
         let dir = std::env::temp_dir().join(format!("dshell-detect-{}", std::process::id()));
         let _ = std::fs::create_dir_all(dir.join("node_modules/@deepseek-ai/dsh"));
         assert_eq!(detect_managed_mode(&dir), Some(ManagedMode::Installed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: `node --import E:\…\index.mjs` fails with
+    /// `ERR_UNSUPPORTED_ESM_URL_SCHEME` ("Received protocol 'e:'"), because a
+    /// Windows path is parsed as a URL. The loader must be a `file://` URL.
+    #[test]
+    fn the_tsx_loader_is_passed_as_a_file_url() {
+        let url = file_url(Path::new(
+            r"E:\projects\dshell\runtimes\source\node_modules\tsx\dist\esm\index.mjs",
+        ));
+        assert!(url.starts_with("file:///E:/"), "{url}");
+        assert!(!url.contains('\\'), "{url}");
+        assert!(url.ends_with("/node_modules/tsx/dist/esm/index.mjs"), "{url}");
+    }
+
+    #[test]
+    fn source_prefix_is_empty_when_tsx_is_not_installed() {
+        let dir = std::env::temp_dir().join(format!("dshell-tsx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(source_prefix(&dir).is_empty());
+
+        let tsx = dir.join("node_modules").join("tsx").join("dist").join("esm");
+        std::fs::create_dir_all(&tsx).unwrap();
+        std::fs::write(tsx.join("index.mjs"), "// loader").unwrap();
+        let prefix = source_prefix(&dir);
+        assert_eq!(prefix.first().map(String::as_str), Some("--import"));
+        assert!(prefix[1].starts_with("file:///"), "{prefix:?}");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

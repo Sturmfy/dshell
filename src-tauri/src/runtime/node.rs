@@ -97,8 +97,12 @@ pub async fn detect(data_root: &Path) -> EnvironmentSnapshot {
 }
 
 pub async fn detect_node(data_root: &Path) -> Option<NodeInfo> {
-    for (candidate, source) in node_candidates(data_root) {
-        let node = candidate;
+    // A Node without `npx` beside it is a real situation (embedded runtimes,
+    // Electron's bundled Node): it can run a checkout but not the npx runtime.
+    // The first candidate that *also* has `npx` is therefore preferred, and one
+    // without it is only used when nothing better exists.
+    let mut fallback: Option<NodeInfo> = None;
+    for (node, source) in node_candidates(data_root) {
         if !node.is_file() {
             continue;
         }
@@ -116,20 +120,76 @@ pub async fn detect_node(data_root: &Path) -> Option<NodeInfo> {
         } else {
             Some(format!("检测到 Node {version}，DSH 需要 ^22.19.0 || >=24.0.0"))
         };
-        return Some(NodeInfo { node, npx, npm, version, source, version_issue });
+        let info = NodeInfo { node, npx, npm, version, source, version_issue };
+        if info.npx.is_some() {
+            return Some(info);
+        }
+        fallback.get_or_insert(info);
     }
-    None
+    fallback
 }
 
 async fn detect_pnpm(node: Option<&NodeInfo>) -> Option<String> {
+    find_pnpm(node).await.map(|(_, version)| version)
+}
+
+/// Locate a runnable `pnpm`, with the version it reports.
+///
+/// The source runtime drives `pnpm install` / `pnpm run build` itself, so it
+/// needs the path as well as the version — and the same resolution order as the
+/// report, or the UI would say "pnpm 可用" while the build could not find it.
+pub async fn find_pnpm(node: Option<&NodeInfo>) -> Option<(PathBuf, String)> {
     for dir in pnpm_dirs(node) {
         for name in ["pnpm.cmd", "pnpm.exe", "pnpm"] {
             let candidate = dir.join(name);
             if candidate.is_file() {
-                if let Some(v) = run_version(&candidate, &["--version"]).await {
-                    return Some(v);
+                if let Some(version) = run_version(&candidate, &["--version"]).await {
+                    return Some((candidate, version));
                 }
             }
+        }
+    }
+    None
+}
+
+/// Locate a `git`, with the version it reports.
+///
+/// `PATH` first (the user's own answer), then the two places Git for Windows
+/// installs to by default. A GUI app inherits the environment Explorer had, which
+/// is usually right — but "usually" is not a reason to fail a checkout when the
+/// documented install path is right there.
+pub async fn find_git() -> Option<(PathBuf, String)> {
+    let mut candidates: Vec<PathBuf> = vec![PathBuf::from("git")];
+    if let Some(base) = std::env::var_os("ProgramFiles") {
+        let base = PathBuf::from(base);
+        candidates.push(base.join("Git").join("cmd").join("git.exe"));
+        candidates.push(base.join("Git").join("bin").join("git.exe"));
+    }
+    if let Some(base) = std::env::var_os("ProgramW6432") {
+        candidates.push(
+            PathBuf::from(base)
+                .join("Git")
+                .join("cmd")
+                .join("git.exe"),
+        );
+    }
+    if let Some(base) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(
+            PathBuf::from(base)
+                .join("Programs")
+                .join("Git")
+                .join("cmd")
+                .join("git.exe"),
+        );
+    }
+    for candidate in candidates {
+        // A relative name ("git") is left to the OS; an absolute one must exist
+        // before it is worth a process launch.
+        if candidate.is_absolute() && !candidate.is_file() {
+            continue;
+        }
+        if let Some(version) = run_version(&candidate, &["--version"]).await {
+            return Some((candidate, version));
         }
     }
     None

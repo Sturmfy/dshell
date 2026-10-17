@@ -9,21 +9,7 @@
 // pages are tabs, and the only way to show one is to open or activate its tab.
 
 import { api, asFailure, events, listen } from './ipc';
-import type { AppInfo, Config, DshHomeSetting, PageKind, RuntimeOption, TabView } from './types';
-export interface NewTabDraft {
-  kind: 'launch' | 'attach' | 'remote';
-  /** Destination for `attach`/`remote`. */
-  url: string;
-  runtimeId: string;
-  /** Optional starting directory; empty means "let DSH decide". */
-  workspace: string;
-  dshHomeMode: DshHomeSetting['mode'];
-  dshHomeCustom: string;
-  allowPlaintext: boolean;
-  killOnClose: boolean;
-  busy: boolean;
-  error: string | null;
-}
+import type { AppInfo, Config, PageKind, RuntimeOption, TabView } from './types';
 
 export interface Toast {
   text: string;

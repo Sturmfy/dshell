@@ -13,6 +13,7 @@ use crate::config::{Config, TabsFile};
 use crate::error::Failure;
 use crate::root::{self, DataRoot};
 use crate::runtime::node::{self, EnvironmentSnapshot, NodeInfo};
+use crate::runtime::npxcache::DistTags;
 use crate::tabs::manager::TabManager;
 
 pub struct AppState {
@@ -24,6 +25,11 @@ pub struct AppState {
     /// Serialises "install pnpm": two of dshell's pages can offer the button, and
     /// two concurrent global npm installs would fight over npm's own lock.
     pub pnpm_install: Mutex<()>,
+    /// Serialises runtime preparation: one npx download or git clone at a time.
+    pub prepare: Mutex<()>,
+    /// Registry dist-tags, cached for a few minutes. The only value in this
+    /// process that describes something outside the machine.
+    pub dist_tags: Mutex<Option<(std::time::Instant, DistTags)>>,
     pub tabs_file: PathBuf,
     /// Set when something could not be persisted or a fallback kicked in; the UI
     /// surfaces it instead of silently doing something else.
@@ -41,6 +47,8 @@ impl AppState {
             node: Mutex::new(None),
             environment: Mutex::new(None),
             pnpm_install: Mutex::new(()),
+            prepare: Mutex::new(()),
+            dist_tags: Mutex::new(None),
             tabs_file,
             boot_note: Mutex::new(note),
         }
@@ -178,7 +186,21 @@ pub fn bootstrap(cli_override: Option<PathBuf>) -> (DataRoot, Config) {
     ] {
         let _ = std::fs::create_dir_all(dir);
     }
-    let (config, _note) = Config::load(&data_root.config_file());
+    let config_file = data_root.config_file();
+    let (config, note, migrated) = Config::load(&config_file);
+    if let Some(note) = note {
+        crate::dsh::process::debug_log(&data_root.path, &format!("config: {note}"));
+    }
+    if migrated {
+        // Write the migrated values back once, so the file and the running app
+        // cannot drift apart — and so the next launch has nothing to migrate.
+        if let Err(err) = config.save(&config_file) {
+            crate::dsh::process::debug_log(
+                &data_root.path,
+                &format!("could not persist the migrated config: {err}"),
+            );
+        }
+    }
     (data_root, config)
 }
 
