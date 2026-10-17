@@ -11,6 +11,7 @@ import type {
   AppInfo,
   Config,
   LogEntry,
+  PageKind,
   RuntimeOption,
   TabFailureDetail,
   TabView,
@@ -21,9 +22,6 @@ export const events = {
   tabChanged: 'dshell://tab-changed',
   runtimeProgress: 'dshell://runtime-progress',
   shortcut: 'dshell://shortcut',
-  /** Rust tells both of dshell's webviews which panel is open, so the strip and
-   *  the panel can never disagree about it. */
-  panel: 'dshell://panel',
 } as const;
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -55,9 +53,21 @@ export const api = {
 
   listTabs: () => invoke<TabsSnapshot>('list_tabs'),
   activeTab: () => invoke<string | null>('active_tab'),
-  /** Opens/closes the panel webview. Rust owns the geometry. */
-  setPanel: (panel: 'newTab' | 'settings' | 'onboarding' | null) =>
-    invoke<void>('set_panel', { panel }),
+  /**
+   * Open one of dshell's own pages as a tab (or focus the existing one).
+   *
+   * There is no "close the panel" counterpart: a page is a tab, so it closes
+   * with `closeTab` like everything else.
+   */
+  openPage: (page: PageKind) => invoke<string>('open_page', { page }),
+  /** Whether Rust would allow closing this tab (the unfinished wizard: no). */
+  tabClosable: (tabId: string) => invoke<boolean>('tab_closable', { tabId }),
+  /** A page tab reporting whether its own start-up succeeded (diagnostics). */
+  pageReady: (page: PageKind, tabId: string, ok: boolean, error?: string) =>
+    invoke<void>('page_ready', { page, tabId, ok, error: error ?? null }),
+  /** One step of a page's start-up, for the debug log. Never throws. */
+  clientStep: (page: PageKind, step: string) =>
+    invoke<void>('client_step', { page, step }).catch(() => undefined),
 
   newTab: (request: unknown) =>
     invoke<{ id: string; instanceKey: string }>('new_tab', { request }),

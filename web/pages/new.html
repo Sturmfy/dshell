@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>新建连接</title>
+    <link rel="stylesheet" href="__STYLES__" />
+  </head>
+  <body class="page-body">
+    <!--
+      The new-connection page — an ordinary tab, in the content area.
+
+      Because it is served from dshell's own origin it may `invoke` dshell's
+      commands; a DSH page in this same region never can. The tab strip above is
+      still the title bar and still carries the window buttons.
+    -->
+    <div id="page" class="page"></div>
+    <script type="module" src="__APP_JS__"></script>
+  </body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dshell-ui",
+  "description": "dshell's own UI: `chrome` (the tab strip) and dshell's page tabs (`page-onboarding`, `page-newtab`, `page-settings`). Two things make this safe. First, the labels: content webviews are named `tab-*`, so they are not matched here at all and get no IPC — which is what keeps a DSH page, in a tab of its own, away from dshell's commands. Second, `local` defaults to true, so a match only counts while the webview's current URL is on dshell's origin; if one of these pages ever navigated to a DSH origin it would immediately lose every permission granted below.",
+  "webviews": ["chrome", "page-*"],
+  "permissions": [
+    "core:default",
+
+    "core:window:allow-start-dragging",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-set-focus"
+  ]
+}

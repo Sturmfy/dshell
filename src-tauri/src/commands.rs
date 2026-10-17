@@ -16,7 +16,7 @@ use crate::runtime::node::EnvironmentSnapshot;
 use crate::runtime::{self, ManagedMode, RuntimeSpec};
 use crate::state::AppState;
 use crate::tabs::manager::TabManager;
-use crate::tabs::state::{ConnectionKind, TabSpec, TabView};
+use crate::tabs::state::{ConnectionKind, PageKind, TabSpec, TabView};
 
 /// Tauri hands commands a `State<'_, T>`: the lifetime is the command's, not
 /// `'static`, so this alias stays generic over it.
@@ -122,15 +122,75 @@ pub async fn active_tab(state: Shared<'_>) -> Result<Option<String>, Failure> {
     Ok(state.manager.active_id().await)
 }
 
-/// Show or hide dshell's panel.
+/// Open one of dshell's own pages as a tab, or focus it if it is already open.
 ///
-/// `panel` is one of `newTab`, `settings`, `onboarding`, or `null` to close.
-/// The panel lives in its own webview *below* the tab strip, so the strip — and
-/// therefore the window's drag region and window buttons — stays visible and
-/// usable the whole time.
+/// This replaces the old `set_panel`: dshell's pages are ordinary tabs now, so
+/// "open settings" is just "open the settings tab", and the window's layout,
+/// focus model and close rules stay exactly the ones every other tab uses.
 #[tauri::command]
-pub async fn set_panel(state: Shared<'_>, panel: Option<String>) -> Result<(), Failure> {
-    state.manager.show_panel(panel.as_deref()).await;
+pub async fn open_page(state: Shared<'_>, page: String) -> Result<String, Failure> {
+    let kind = PageKind::parse(&page).ok_or_else(|| {
+        Failure::new(FailureCode::Internal, format!("未知的页面：{page}"))
+    })?;
+    state.manager.open_page(kind, true).await
+}
+
+/// Whether a tab may be closed right now.
+///
+/// The strip renders from `TabView::closable`, which carries the same rule, so
+/// this is the on-demand form of it — for a page that wants to ask about a tab
+/// other than the one it is showing. Both go through `PageKind::closable`, so
+/// there is exactly one answer to "can this be closed".
+#[tauri::command]
+pub async fn tab_closable(state: Shared<'_>, tab_id: String) -> Result<bool, Failure> {
+    Ok(state.manager.is_closable(&tab_id).await)
+}
+
+/// Report that a page tab finished its own start-up.
+///
+/// This exists to make one specific failure visible. dshell's pages are served
+/// from dshell's origin and reach the `invoke` surface only while they stay
+/// there (the `dshell-ui` capability matches `page-*` *and* a local origin). If
+/// that ever stopped holding, the page would still render its static skeleton —
+/// it would simply never fill in, because every command it needs would be
+/// rejected. That is indistinguishable from a slow load on screen, so the page
+/// reports the outcome and it lands in the debug log.
+///
+/// `error` is the browser's message when the page's first command failed, so a
+/// denial ("not allowed by ACL") reads differently from a slow or broken
+/// command.
+#[tauri::command]
+pub async fn page_ready(
+    app: AppHandle,
+    page: String,
+    tab_id: String,
+    ok: bool,
+    error: Option<String>,
+) -> Result<(), Failure> {
+    let root = state_of(&app)?.data_root.path.clone();
+    crate::dsh::process::debug_log(
+        &root,
+        &format!(
+            "page {page} ({tab_id}) ipc {}",
+            match (&ok, error.as_deref()) {
+                (true, _) => "ok".to_string(),
+                (false, Some(error)) => format!("FAILED: {error}"),
+                (false, None) => "FAILED".to_string(),
+            }
+        ),
+    );
+    Ok(())
+}
+
+/// One step of a page's start-up, reported for the debug log.
+///
+/// Pairs with [`page_ready`]: between them they say how far a page got before
+/// something stopped it, which is the difference between "the wizard is broken"
+/// and "the wizard's second half is broken".
+#[tauri::command]
+pub async fn client_step(app: AppHandle, page: String, step: String) -> Result<(), Failure> {
+    let root = state_of(&app)?.data_root.path.clone();
+    crate::dsh::process::debug_log(&root, &format!("page {page}: {step}"));
     Ok(())
 }
 

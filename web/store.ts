@@ -1,20 +1,15 @@
-// The shared data layer for dshell's two UIs.
+// The shared data layer for dshell's UI.
 //
-// dshell's chrome lives in *two* webviews — the tab strip on top, and the panel
-// below it — because the strip must stay visible (and therefore draggable) while
-// a panel is open. Both need the same picture of the world, so that picture lives
-// here rather than in either view:
+// Rust is the only authority. The store fetches `app_info` / `list_tabs` and
+// subscribes to Rust's events; it never infers state on its own. Rendering is not
+// shared — the strip and each page tab render themselves from this store, so the
+// views never have to coordinate anything.
 //
-//   * Rust is the only authority. The store fetches `list_tabs` / `app_info` and
-//     subscribes to Rust's events; it never infers state on its own.
-//   * Rendering is not shared. Each view renders itself from the store, so the
-//     two webviews never have to coordinate anything.
+// Note what is *not* here: there is no notion of an open panel. dshell's own
+// pages are tabs, and the only way to show one is to open or activate its tab.
 
 import { api, asFailure, events, listen } from './ipc';
-import type { AppInfo, Config, DshHomeSetting, RuntimeOption, TabView } from './types';
-
-export type PanelKind = 'none' | 'newTab' | 'settings' | 'onboarding';
-
+import type { AppInfo, Config, DshHomeSetting, PageKind, RuntimeOption, TabView } from './types';
 export interface NewTabDraft {
   kind: 'launch' | 'attach' | 'remote';
   /** Destination for `attach`/`remote`. */
@@ -41,13 +36,7 @@ export interface StoreState {
   /** The visible tab, as reported by Rust. Never inferred locally. */
   activeId: string | null;
   runtimes: RuntimeOption[];
-  panel: PanelKind;
-  draft: NewTabDraft;
   toast: Toast | null;
-  onboardingStep: number;
-  onboardingRoot: string;
-  onboardingWriteEnv: boolean;
-  onboardingError: string | null;
 }
 
 export class Store {
@@ -56,24 +45,7 @@ export class Store {
     tabs: [],
     activeId: null,
     runtimes: [],
-    panel: 'none',
-    draft: {
-      kind: 'launch',
-      url: '',
-      runtimeId: 'npm',
-      workspace: '',
-      dshHomeMode: 'system',
-      dshHomeCustom: '',
-      allowPlaintext: false,
-      killOnClose: false,
-      busy: false,
-      error: null,
-    },
     toast: null,
-    onboardingStep: 0,
-    onboardingRoot: '',
-    onboardingWriteEnv: true,
-    onboardingError: null,
   };
 
   private listeners = new Set<() => void>();
@@ -85,7 +57,7 @@ export class Store {
     return () => this.listeners.delete(listener);
   }
 
-  private emit(): void {
+  emit(): void {
     for (const listener of this.listeners) listener();
   }
 
@@ -115,10 +87,6 @@ export class Store {
         this.emit();
       },
     );
-    await listen<{ panel: PanelKind }>(events.panel, (payload) => {
-      this.state.panel = payload.panel;
-      this.emit();
-    });
 
     await this.refreshInfo();
     await this.refreshRuntimes();
@@ -130,16 +98,6 @@ export class Store {
     try {
       const info = await api.appInfo(refreshEnvironment);
       this.state.info = info;
-      const config = info.config;
-      const draft = this.state.draft;
-      if (!draft.workspace) draft.workspace = config.recentWorkspaces[0] ?? '';
-      draft.runtimeId = config.defaultRuntime || draft.runtimeId;
-      draft.killOnClose = config.killOnClose;
-      draft.dshHomeMode = config.dshHome?.mode ?? 'system';
-      draft.dshHomeCustom = config.dshHome?.mode === 'custom' ? config.dshHome.path : '';
-      if (!config.onboardingDone) {
-        this.state.onboardingRoot ||= info.root.path;
-      }
       if (info.bootNote) this.toast(info.bootNote);
     } catch (error) {
       this.toast(asFailure(error).message, true);
@@ -167,20 +125,20 @@ export class Store {
     this.emit();
   }
 
-  // -------------------------------------------------------------- panel
+  // -------------------------------------------------------------- pages
 
   /**
-   * Open or close dshell's panel. Rust does the webview work; the strip only
-   * reports the intent, so the two views cannot disagree about what is open.
+   * Open one of dshell's own pages. Rust owns tab creation and uniqueness, so
+   * the UI only ever reports the intent — this is why the strip and a page can
+   * never disagree about which tabs exist.
    */
-  async openPanel(panel: PanelKind): Promise<void> {
-    this.state.draft.error = null;
-    this.state.panel = panel;
-    this.emit();
-    if (panel === 'newTab') void this.refreshRuntimes();
-    await api.setPanel(panel === 'none' ? null : panel).catch((error) => {
+  async openPage(page: PageKind): Promise<void> {
+    try {
+      await api.openPage(page);
+      await this.refreshTabs();
+    } catch (error) {
       this.toast(asFailure(error).message, true);
-    });
+    }
   }
 
   // -------------------------------------------------------------- toasts
@@ -218,18 +176,21 @@ export class Store {
     await api.activateTab(id).then(() => this.refreshTabs());
   }
 
-  async close(id: string): Promise<void> {
+  /** Returns false when Rust refused the close (e.g. an unfinished wizard). */
+  async close(id: string): Promise<boolean> {
     try {
       await api.closeTab(id);
       await this.refreshTabs();
+      return true;
     } catch (error) {
       this.toast(asFailure(error).message, true);
+      return false;
     }
   }
 
   async closeOthers(keep: string): Promise<void> {
     for (const tab of this.state.tabs) {
-      if (tab.id !== keep) await api.closeTab(tab.id).catch(() => undefined);
+      if (tab.id !== keep && tab.closable) await api.closeTab(tab.id).catch(() => undefined);
     }
     await this.refreshTabs();
   }
@@ -259,56 +220,71 @@ export class Store {
   async restart(id: string): Promise<void> {
     await api.restartTab(id).then(() => this.refreshTabs()).catch(() => undefined);
   }
-
-  // --------------------------------------------------------- new tab
-
-  /** Send the draft to Rust. Returns true when the tab was created. */
-  async submitDraft(): Promise<boolean> {
-    const draft = this.state.draft;
-    draft.busy = true;
-    draft.error = null;
-    this.emit();
-    try {
-      if (draft.kind === 'launch') {
-        const dshHome: DshHomeSetting =
-          draft.dshHomeMode === 'custom'
-            ? { mode: 'custom', path: draft.dshHomeCustom.trim() }
-            : draft.dshHomeMode === 'instance'
-              ? { mode: 'instance' }
-              : { mode: 'system' };
-        const startingDir = draft.workspace.trim();
-        await api.newTab({
-          kind: 'launch',
-          // `null`, not "": it tells Rust the user did not pick a directory, so
-          // DSH keeps ownership of the project folder.
-          workspace: startingDir.length > 0 ? startingDir : null,
-          runtimeId: draft.runtimeId,
-          dshHome,
-          killOnClose: draft.killOnClose,
-        });
-      } else {
-        await api.newTab({
-          kind: 'attach',
-          url: draft.url.trim(),
-          remote: draft.kind === 'remote',
-          allowPlaintext: draft.allowPlaintext,
-        });
-      }
-      draft.busy = false;
-      await this.openPanel('none');
-      await this.refreshTabs();
-      return true;
-    } catch (error) {
-      const failure = asFailure(error);
-      draft.busy = false;
-      draft.error = failure.detail ? `${failure.message}\n${failure.detail}` : failure.message;
-      this.emit();
-      return false;
-    }
-  }
 }
 
-/** Where a panel should be shown, given an active tab and the tab count. */
-export function panelFor(state: StoreState): PanelKind {
-  return state.panel;
+// -------------------------------------------------------------------- pages
+
+/**
+ * The store as seen from inside a dshell page tab.
+ *
+ * A page needs three things the strip does not: it must know *which* tab it is,
+ * observe whether it is the visible one, and close itself. `tabs-changed`
+ * already carries the active tab, so all three come from the one subscription
+ * the base store already holds.
+ */
+export class PageStore extends Store {
+  /** This page's tab id, resolved from the active tab at load time. */
+  pageTabId = '';
+
+  constructor(private readonly kind: PageKind) {
+    super();
+  }
+
+  async start(): Promise<void> {
+    await this.step('start');
+    await super.start();
+    await this.step('store started');
+    this.pageTabId =
+      this.state.tabs.find((tab) => tab.pageKind === this.kind)?.id ?? '';
+    // A page that is loaded but not the active tab (opened in the background)
+    // still needs its id, so fall back to the freshest snapshot.
+    if (!this.pageTabId) await this.refreshTabs();
+    this.pageTabId ||= this.state.tabs.find((tab) => tab.pageKind === this.kind)?.id ?? '';
+    // Tell Rust the page came up. See `page_ready`: this is how a page whose
+    // `invoke` was refused gets noticed instead of silently rendering nothing.
+    await api.pageReady(this.kind, this.pageTabId, true).catch(() => undefined);
+  }
+
+  /** Report that this page never came up, with the reason the browser gave. */
+  async reportBootFailure(error: unknown): Promise<void> {
+    await api
+      .pageReady(this.kind, this.pageTabId, false, String(error))
+      .catch(() => undefined);
+  }
+
+  /** Report one start-up step to the debug log. Never throws. */
+  async step(step: string): Promise<void> {
+    await api.clientStep(this.kind, step);
+  }
+
+  get isActive(): boolean {
+    return this.pageTabId !== '' && this.state.activeId === this.pageTabId;
+  }
+
+  /** The tab view for this page, or undefined while it is still being created. */
+  get self(): TabView | undefined {
+    return this.state.tabs.find((tab) => tab.id === this.pageTabId);
+  }
+
+  /** Close this page's own tab. Rust decides whether that is allowed. */
+  async closeSelf(): Promise<void> {
+    if (!this.pageTabId) return;
+    await this.close(this.pageTabId);
+  }
+
+  /** Whether Rust would let this page be closed right now. */
+  async closable(): Promise<boolean> {
+    if (!this.pageTabId) return true;
+    return api.tabClosable(this.pageTabId).catch(() => true);
+  }
 }

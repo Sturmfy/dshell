@@ -11,9 +11,17 @@ const exe = process.platform === 'win32' ? 'cargo.exe' : 'cargo';
 const cargo = existsSync(path.join(cargoBin, exe)) ? path.join(cargoBin, exe) : exe;
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const manifest = path.join(root, 'src-tauri', 'Cargo.toml');
+const crateDir = path.join(root, 'src-tauri');
 
-const child = spawn(cargo, ['--manifest-path', manifest, ...process.argv.slice(2)], {
+// Run from the crate directory rather than passing `--manifest-path`.
+//
+// cargo 1.99 rejects `cargo --manifest-path <path> <command>` ("unexpected
+// argument"), and appending the flag instead breaks the `-- <rustc args>` form
+// that `npm run check` uses — everything after `--` is a rustc argument, so a
+// cargo flag may not be placed there. The manifest is simply the working
+// directory, which no cargo version has an opinion about.
+const child = spawn(cargo, process.argv.slice(2), {
+  cwd: crateDir,
   stdio: 'inherit',
   env: { ...process.env, PATH: `${cargoBin}${path.delimiter}${process.env.PATH ?? ''}` },
 });

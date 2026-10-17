@@ -66,7 +66,10 @@ pub fn main() {
             commands::app_info,
             commands::list_tabs,
             commands::active_tab,
-            commands::set_panel,
+            commands::open_page,
+            commands::tab_closable,
+            commands::page_ready,
+            commands::client_step,
             commands::new_tab,
             commands::close_tab,
             commands::activate_tab,
@@ -179,40 +182,31 @@ fn setup_app(
         let _ = window.maximize();
     }
 
-    restore_tabs(state.clone());
-    open_onboarding_if_needed(state);
+    restore_tabs(state);
     Ok(())
 }
-/// On a fresh install, open the panel ourselves.
+/// Boot sequence: restore the user's tabs, then make sure the window shows
+/// *something* — always as a tab.
 ///
-/// The chrome UI also asks for this once it loads, but it cannot be relied on to
-/// be the first thing to run: the window should never show an empty content area
-/// just because the frontend was slow.
-pub fn open_onboarding_if_needed(state: Arc<AppState>) {
-    tauri::async_runtime::spawn(async move {
-        if state.onboarding_done().await {
-            return;
-        }
-        state.manager.show_panel(Some("onboarding")).await;
-    });
-}
-
-/// Reopen the tabs from the previous session.
+/// The order matters. Restoring first means an unfinished wizard appears
+/// alongside the user's tabs rather than instead of them.
 ///
-/// `LocalSpawn` tabs are simply started again — dshell always captures a fresh
-/// launch token, so nothing needs to be remembered. `Attach`/`Remote` tabs have
-/// no URL on disk (tokens are never persisted, by design), so they come back as a
-/// prompt to paste the URL again — unless their webview still holds a valid
-/// session cookie, in which case they reconnect silently.
+/// Three cases, and every one of them ends with at least one tab:
+///
+/// | state | what opens |
+/// |---|---|
+/// | nothing restored, wizard unfinished | the wizard, **active** |
+/// | tabs restored, wizard unfinished | the wizard, behind them |
+/// | nothing restored, wizard done | a new-connection tab |
+///
+/// The last row is the point of the change that made dshell's pages tabs: an
+/// empty window with a blank content area is not a state this app has any more.
 fn restore_tabs(state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
         let (file, note) = state.load_tabs().await;
         if let Some(note) = note {
             let mut slot = state.boot_note.lock().await;
             *slot = Some(note);
-        }
-        if file.tabs.is_empty() {
-            return;
         }
         let order = if file.order.is_empty() {
             file.tabs.iter().map(|spec| spec.id.clone()).collect::<Vec<_>>()
@@ -221,7 +215,14 @@ fn restore_tabs(state: Arc<AppState>) {
         };
 
         for id in order {
-            let Some(mut spec) = file.tabs.iter().find(|spec| spec.id == id).cloned() else {
+            // A `tabs.json` written by an older build can still contain page
+            // entries; they are recreated below from config instead.
+            let Some(mut spec) = file
+                .tabs
+                .iter()
+                .find(|spec| spec.id == id && !spec.connection.is_page())
+                .cloned()
+            else {
                 continue;
             };
             match spec.connection.clone() {
@@ -276,9 +277,29 @@ fn restore_tabs(state: Arc<AppState>) {
                             .ok();
                     }
                 }
+                ConnectionKind::Page { .. } => {}
             }
         }
+
+        let restored_any = !state.manager.tab_ids().await.is_empty();
+        let onboarding_done = state.onboarding_done().await;
         state.manager.changed().await;
+
+        if !onboarding_done {
+            // The wizard is a tab like any other; it simply takes focus on a
+            // fresh install, and stays in the background once the user has tabs
+            // of their own to look at.
+            let _ = state
+                .manager
+                .open_page(tabs::state::PageKind::Onboarding, !restored_any)
+                .await;
+        } else if !restored_any {
+            let _ = state
+                .manager
+                .open_page(tabs::state::PageKind::NewTab, true)
+                .await;
+        }
+        state.persist_tabs().await;
     });
 }
 

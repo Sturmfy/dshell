@@ -1,16 +1,21 @@
 // dshell's chrome UI: the tab strip.
 //
-// Deliberately *only* the strip. dshell's panels (new tab, settings, onboarding)
-// live in a second webview below it, because the strip has to stay on screen
-// while a panel is open — it is the window's only drag region, and a frameless
-// window with no drag region cannot be moved.
+// Deliberately *only* the strip — and the strip is the window's title bar. It is
+// the sole drag region and holds the only window buttons, which is why it is its
+// own webview pinned above the content area rather than something that can be
+// covered.
+//
+// Every page in this window is a tab, including dshell's own (first-run wizard,
+// new connection, settings). The strip therefore needs no special cases for
+// them beyond cosmetics: a page tab has an icon, cannot be renamed, and may
+// refuse to close.
 //
 // The strip owns no state of its own: everything comes from the shared `Store`,
 // which is fed by Rust.
 
 import { api, asFailure, events, listen, win } from './ipc';
 import { Store } from './store';
-import type { TabPhase, TabView } from './types';
+import type { PageKind, TabPhase, TabView } from './types';
 
 const strip = document.getElementById('tabstrip') as HTMLElement;
 const controls = document.getElementById('window-controls') as HTMLElement;
@@ -40,6 +45,20 @@ function h(tag: string, props: Record<string, unknown> = {}, ...children: unknow
     el.appendChild(typeof child === 'string' ? document.createTextNode(child) : (child as Node));
   }
   return el;
+}
+
+/** A page tab is a dshell surface, not a DSH session; mark it so the two read
+ *  differently at a glance. Icons are distinct because two tabs sharing one is
+ *  how a user loses track of which is which. */
+const PAGE_ICON: Record<PageKind, string> = {
+  onboarding: '✦',
+  new: '＋',
+  settings: '⚙',
+};
+
+function tabIcon(tab: TabView): string | null {
+  const kind = tab.pageKind as PageKind | null | undefined;
+  return kind ? (PAGE_ICON[kind] ?? null) : null;
 }
 
 function dotClass(phase: TabPhase): string {
@@ -72,6 +91,7 @@ const PHASE_LABEL: Record<TabPhase, string> = {
 
 function tooltip(tab: TabView): string {
   const lines = [`${tab.title}  ·  ${PHASE_LABEL[tab.phase] ?? tab.phase}`, `类型：${tab.badge}`];
+  if (!tab.closable) lines.push('首次配置完成前不能关闭');
   if (tab.origin) lines.push(`地址：${tab.origin}`);
   if (tab.workspace) lines.push(`起始目录：${tab.workspace}`);
   else if (tab.badge === 'local') lines.push('起始目录：用户主目录（项目目录在 DSH 内选择）');
@@ -94,13 +114,17 @@ function render() {
 
   for (const tab of tabs) {
     const active = tab.id === activeId;
+    const isPage = Boolean(tab.pageKind);
     const el = h('div', {
-      class: `tab ${active ? 'tab--active' : ''}`,
+      class: `tab ${active ? 'tab--active' : ''} ${isPage ? 'tab--page' : ''}`,
       title: tooltip(tab),
       dataset: { tabId: tab.id },
       draggable: 'true',
     });
-    el.appendChild(h('span', { class: `tab__dot ${dotClass(tab.phase)}` }));
+
+    const icon = tabIcon(tab);
+    if (icon) el.appendChild(h('span', { class: 'tab__icon', text: icon }));
+    else el.appendChild(h('span', { class: `tab__dot ${dotClass(tab.phase)}` }));
 
     if (renaming === tab.id) {
       const input = h('input', { class: 'tab__rename', type: 'text', value: renameValue }) as HTMLInputElement;
@@ -136,30 +160,46 @@ function render() {
     }
     el.appendChild(h('span', { class: 'tab__badge', text: tab.badge }));
 
-    el.appendChild(
-      h('button', {
-        class: 'tab__close',
-        title: '关闭选项卡 (Ctrl+W)',
-        html: '&times;',
-        onclick: (event: Event) => {
-          event.stopPropagation();
-          void store.close(tab.id);
-        },
-      }),
-    );
+    // The close affordance is absent, not merely disabled, for a tab Rust would
+    // refuse to close: a button that exists and does nothing is worse than no
+    // button, and the reason is in the tooltip.
+    if (tab.closable) {
+      el.appendChild(
+        h('button', {
+          class: 'tab__close',
+          title: '关闭选项卡 (Ctrl+W)',
+          html: '&times;',
+          onclick: (event: Event) => {
+            event.stopPropagation();
+            void store.close(tab.id);
+          },
+        }),
+      );
+    } else {
+      el.appendChild(
+        h('span', {
+          class: 'tab__pinned',
+          title: '首次配置完成前不能关闭',
+          text: '•',
+        }),
+      );
+    }
 
     el.addEventListener('click', (event) => {
       if ((event.target as HTMLElement).closest('.tab__close')) return;
       void store.activate(tab.id);
     });
     el.addEventListener('auxclick', (event) => {
-      if ((event as MouseEvent).button === 1) {
-        event.preventDefault();
-        void store.close(tab.id);
-      }
+      const middle = (event as MouseEvent).button === 1;
+      if (!middle) return;
+      event.preventDefault();
+      if (tab.closable) void store.close(tab.id);
     });
     el.addEventListener('dblclick', (event) => {
       if ((event.target as HTMLElement).closest('.tab__close')) return;
+      // Page titles are fixed — Rust rejects the rename anyway, so do not offer
+      // the editing affordance for them.
+      if (isPage) return;
       renaming = tab.id;
       renameValue = tab.title;
       render();
@@ -178,14 +218,14 @@ function render() {
       event.preventDefault();
       const rect = el.getBoundingClientRect();
       const after = (event as DragEvent).clientX > rect.left + rect.width / 2;
-      el.classList.toggle('tab--drop-after', after);
-      el.classList.toggle('tab--drop-before', !after);
+      el.classList.toggle('tab__drop-after', after);
+      el.classList.toggle('tab__drop-before', !after);
     });
-    el.addEventListener('dragleave', () => el.classList.remove('tab--drop-before', 'tab--drop-after'));
+    el.addEventListener('dragleave', () => el.classList.remove('tab__drop-before', 'tab__drop-after'));
     el.addEventListener('drop', (event) => {
       event.preventDefault();
       const dragged = (event as DragEvent).dataTransfer?.getData('text/plain');
-      el.classList.remove('tab--drop-before', 'tab--drop-after');
+      el.classList.remove('tab__drop-before', 'tab__drop-after');
       if (!dragged || dragged === tab.id) return;
       const rect = el.getBoundingClientRect();
       const after = (event as DragEvent).clientX > rect.left + rect.width / 2;
@@ -199,14 +239,16 @@ function render() {
     strip.appendChild(el);
   }
 
+  // "+" always opens the new-connection page. It is a tab, so pressing it twice
+  // focuses the same tab rather than stacking a second one.
   strip.appendChild(
     h('button', {
-      class: `tab__new ${store.state.panel === 'newTab' ? 'tab__new--active' : ''}`,
-      title: '新建选项卡 (Ctrl+T)',
+      class: `tab__new ${isPageActive('new') ? 'tab__new--active' : ''}`,
+      title: '新建连接 (Ctrl+T)',
       text: '+',
       onclick: (event: Event) => {
         event.stopPropagation();
-        void store.openPanel(store.state.panel === 'newTab' ? 'none' : 'newTab');
+        void store.openPage('new');
       },
     }),
   );
@@ -234,10 +276,10 @@ function render() {
   controls.innerHTML = '';
   controls.appendChild(
     h('button', {
-      class: `wc ${store.state.panel === 'settings' ? 'wc--active' : ''}`,
+      class: `wc ${isPageActive('settings') ? 'wc--active' : ''}`,
       title: '设置',
       html: '&#9881;',
-      onclick: () => void store.openPanel(store.state.panel === 'settings' ? 'none' : 'settings'),
+      onclick: () => void store.openPage('settings'),
     }),
   );
   controls.appendChild(
@@ -268,34 +310,48 @@ function render() {
   renderMenu();
 }
 
+function isPageActive(kind: PageKind): boolean {
+  const active = store.state.tabs.find((tab) => tab.id === store.state.activeId);
+  return active?.pageKind === kind;
+}
+
 function renderMenu() {
   document.querySelector('.menu')?.remove();
   if (!menu) return;
   const tab = store.state.tabs.find((candidate) => candidate.id === menu!.tabId);
-  const items: [string, () => void, boolean?][] = [
-    [
-      '重命名',
-      () => {
-        renaming = menu!.tabId;
-        renameValue = tab?.title ?? '';
-        menu = null;
-        render();
-      },
-    ],
-    ['重新加载页面', () => void store.reload(menu!.tabId)],
-    ['重启后端进程', () => void store.restart(menu!.tabId)],
-    [
-      '在系统浏览器中打开',
-      () =>
-        void api.openInSystemBrowser(menu!.tabId).catch((error) => store.toast(asFailure(error).message, true)),
-    ],
-    [
-      '清空该实例数据（登录态）',
-      () => void api.clearTabData(menu!.tabId).then(() => store.toast('已清空该实例的站点数据')),
-    ],
-    ['关闭其他', () => void store.closeOthers(menu!.tabId)],
-    ['关闭', () => void store.close(menu!.tabId), true],
-  ];
+  const isPage = Boolean(tab?.pageKind);
+
+  // The item list is built per tab kind, because a page tab has no backend to
+  // restart, no site data to clear and no DSH origin to open in a browser.
+  const items: [string, () => void, boolean?][] = isPage
+    ? [['关闭', () => void store.close(menu!.tabId), true]]
+    : [
+        [
+          '重命名',
+          () => {
+            renaming = menu!.tabId;
+            renameValue = tab?.title ?? '';
+            menu = null;
+            render();
+          },
+        ],
+        ['重新加载页面', () => void store.reload(menu!.tabId)],
+        ['重启后端进程', () => void store.restart(menu!.tabId)],
+        [
+          '在系统浏览器中打开',
+          () =>
+            void api
+              .openInSystemBrowser(menu!.tabId)
+              .catch((error) => store.toast(asFailure(error).message, true)),
+        ],
+        [
+          '清空该实例数据（登录态）',
+          () => void api.clearTabData(menu!.tabId).then(() => store.toast('已清空该实例的站点数据')),
+        ],
+        ['关闭其他', () => void store.closeOthers(menu!.tabId)],
+        ['关闭', () => void store.close(menu!.tabId), true],
+      ];
+
   const el = h('div', {
     class: 'menu',
     style: `left:${Math.min(menu.x, window.innerWidth - 250)}px; top:${Math.min(menu.y, window.innerHeight - 270)}px`,
@@ -343,13 +399,9 @@ function installShortcuts() {
   window.addEventListener('keydown', (event) => {
     const ctrl = event.ctrlKey || event.metaKey;
     if (!ctrl) {
-      if (event.key === 'Escape') {
-        if (menu) {
-          menu = null;
-          render();
-        } else if (store.state.panel !== 'none') {
-          void store.openPanel('none');
-        }
+      if (event.key === 'Escape' && menu) {
+        menu = null;
+        render();
       }
       return;
     }
@@ -357,10 +409,12 @@ function installShortcuts() {
     switch (event.key.toLowerCase()) {
       case 't':
         event.preventDefault();
-        void store.openPanel(store.state.panel === 'newTab' ? 'none' : 'newTab');
+        void store.openPage('new');
         break;
       case 'w':
         event.preventDefault();
+        // Rust refuses the one close that must not happen; asking anyway keeps
+        // the rule in a single place.
         if (activeId()) void store.close(activeId()!);
         break;
       case 'r':
@@ -373,7 +427,7 @@ function installShortcuts() {
         break;
       case ',':
         event.preventDefault();
-        void store.openPanel('settings');
+        void store.openPage('settings');
         break;
       default:
         if (!Number.isNaN(index) && index >= 1 && index <= 9) {
@@ -391,7 +445,7 @@ function installShortcuts() {
   void listen<{ action: string }>(events.shortcut, ({ action }) => {
     switch (action) {
       case 'new-tab':
-        void store.openPanel(store.state.panel === 'newTab' ? 'none' : 'newTab');
+        void store.openPage('new');
         break;
       case 'close-tab':
         if (activeId()) void store.close(activeId()!);

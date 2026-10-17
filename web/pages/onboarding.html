@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>首次配置</title>
+    <link rel="stylesheet" href="__STYLES__" />
+  </head>
+  <body class="page-body">
+    <!--
+      The first-run wizard — an ordinary tab, opened by Rust on a fresh install.
+
+      It is the one tab that refuses to close before it is finished: dshell has no
+      data root and no runtimes until this returns. That rule lives in Rust
+      (`PageKind::closable`), not in this document.
+    -->
+    <div id="page" class="page"></div>
+    <script type="module" src="__APP_JS__"></script>
+  </body>
+</html>

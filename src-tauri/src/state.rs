@@ -79,8 +79,9 @@ impl AppState {
         }
     }
 
-    /// Whether the user has completed the first-run wizard. Gates the panel that
-    /// dshell opens for itself at startup.
+    /// Whether the user has completed the first-run wizard. The wizard is a tab
+    /// like any other, but this is what decides whether it opens at startup and
+    /// whether it may be closed.
     pub async fn onboarding_done(&self) -> bool {
         self.config.lock().await.onboarding_done
     }

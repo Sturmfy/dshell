@@ -185,7 +185,7 @@ impl Default for Config {
 impl Config {
     pub fn load(path: &Path) -> (Self, Option<String>) {
         match std::fs::read_to_string(path) {
-            Ok(text) => match serde_json::from_str::<Config>(&text) {
+            Ok(text) => match serde_json::from_str::<Config>(strip_bom(&text)) {
                 Ok(cfg) => (cfg, None),
                 Err(err) => (
                     Config::default(),
@@ -238,7 +238,7 @@ impl TabsFile {
                 )
             }
         };
-        let raw: serde_json::Value = match serde_json::from_str(&text) {
+        let raw: serde_json::Value = match serde_json::from_str(strip_bom(&text)) {
             Ok(value) => value,
             Err(err) => {
                 return (
@@ -279,6 +279,20 @@ impl TabsFile {
         let text = serde_json::to_string_pretty(self).unwrap_or_default();
         std::fs::write(path, text)
     }
+}
+
+/// Drop a UTF-8 byte-order mark before parsing.
+///
+/// Both files under the data root are meant to be hand-editable, and the way a
+/// user on Windows actually edits them — Notepad saving "UTF-8 with BOM" —
+/// prepends a byte that `serde_json` rejects. The failure mode is not cosmetic:
+/// a `config.json` that will not parse resets the config, which loses the chosen
+/// data root and re-runs the first-run wizard over the user's setup.
+///
+/// Only the BOM is stripped; leading whitespace is already legal JSON, and
+/// masking real syntax errors would make a malformed file look almost-right.
+fn strip_bom(text: &str) -> &str {
+    text.trim_start_matches('\u{feff}')
 }
 
 #[cfg(test)]
@@ -374,5 +388,37 @@ mod tests {
                 serde_json::to_string(&config.dsh_home).unwrap()
             );
         }
+    }
+
+    /// Both files are meant to be hand-editable, and the editors people actually
+    /// use put a BOM in front of what they save. A parse failure here silently
+    /// throws away the user's configuration, so it is worth a test of its own.
+    #[test]
+    fn a_utf8_bom_does_not_wipe_the_config() {
+        let dir = std::env::temp_dir().join(format!("dshell-bom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config_file = dir.join("config.json");
+        let body = r#"{"schemaVersion":1,"onboardingDone":true,"recentWorkspaces":["E:\\ws"]}"#;
+        std::fs::write(&config_file, format!("\u{feff}{body}")).unwrap();
+        let (config, note) = Config::load(&config_file);
+        assert!(config.onboarding_done, "a BOM must not reset the config");
+        assert_eq!(config.recent_workspaces, vec!["E:\\ws".to_string()]);
+        assert!(note.is_none(), "unexpected note: {note:?}");
+
+        let tabs_file = dir.join("tabs.json");
+        std::fs::write(&tabs_file, format!("\u{feff}{body}")).unwrap();
+        let (_, note) = TabsFile::load(&tabs_file);
+        assert!(note.is_none(), "a BOM must not discard the tab list: {note:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strip_bom_leaves_everything_else_alone() {
+        assert_eq!(strip_bom("\u{feff}{\"a\":1}"), "{\"a\":1}");
+        assert_eq!(strip_bom("{\"a\":1}"), "{\"a\":1}");
+        // Whitespace is legal JSON, so it is deliberately not touched.
+        assert_eq!(strip_bom("  {\"a\":1}"), "  {\"a\":1}");
     }
 }

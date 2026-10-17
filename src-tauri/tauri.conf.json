@@ -10,7 +10,7 @@
     "windows": [],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
-      "capabilities": ["chrome"],
+      "capabilities": ["dshell-ui"],
       "assetProtocol": {
         "enable": false
       }

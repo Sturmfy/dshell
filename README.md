@@ -33,36 +33,48 @@ origin 就是 `http://127.0.0.1:PORT`，一切才成立。
 
 | 面 | 承载 | origin | 能访问 DSH `/api` | 有 IPC 权限 |
 |---|---|---|---|---|
-| **Chrome 面** | dshell 的选项卡条 + 面板 | `http://tauri.localhost` | ❌ 也不需要 | ✅ **只有它们有** |
+| **Chrome 面** | dshell 的选项卡条 + dshell 自己的页面 | `http://tauri.localhost` | ❌ 也不需要 | ✅ **只有它们有** |
 | **Content 面** | DSH 原生前端，每选项卡一个 | `http://127.0.0.1:PORT` | ✅ 顶层文档，天然同源 | ❌ **一个都不给** |
 | **Core 面** | dshell 的 Rust 后端 | 进程内 | 只做无凭据探测（`GET /` 期望 401） | — |
 
-Content webview **不在任何 capability 里**：一旦它导航到 DSH origin，
-它就是一个 *remote* 上下文，什么都调不到。这既满足需求，也顺手关掉了
-「DSH 前端被替换/被诱导后拿到本地能力」这条路。
+**窗口里每一个页面都是一个选项卡** —— 包括 dshell 自己的页面（首启向导、新建连接、
+设置）。它们没有自己的布局区域，就是内容区里的一个选项卡，因此**焦点、快捷键、
+激活与关闭只有一套规则**，而不是两套。
 
-### 窗口分区：互不重叠的四个区
+IPC 权限由**两条**同时成立的条件决定（`capabilities/dshell-ui.json`）：
+
+1. **webview label**：内容 webview 一律叫 `tab-*`，dshell 自己的页面叫 `page-*`。
+   capability 只匹配 `chrome` 与 `page-*`，所以内容 webview **一个权限都没有**；
+2. **当前 origin 必须是 dshell 自己的**（`local` 默认为 true）。即使某个页面被导航到
+   DSH origin，它也会**立刻失去全部权限**。
+
+第 1 条关掉了「DSH 前端被替换/被诱导后拿到本地能力」这条路；第 2 条是它的纵深防御。
+名字在这里是安全边界而不是命名习惯，所以 `tabs/state.rs` 里有单元测试断言
+`page-*` 与 `tab-*` 永不可能撞车。
+
+### 窗口分区：互不重叠的两个区
 
 ```
  y = 0      ┌──────────────────────────────────┐
             │ chrome webview — 选项卡条 38px    │  拖拽区 + 窗口按钮（永远在）
  y = 38     ├──────────────────────────────────┤
-            │ panel webview — 新建/设置/首启    │  仅面板打开时（≤380px）
- y = 38+h   ├──────────────────────────────────┤
-            │ content webview — 当前 DSH 页面   │
+            │ content webview — 当前选项卡      │  DSH 页面，或 dshell 自己的页面
             └──────────────────────────────────┘
 ```
 
 **这是本应用唯一一段刻意"死板"的布局，因为它是窗口可拖动的前提。**
 无边框窗口只能通过 `data-tauri-drag-region` 元素拖动，而那个元素在选项卡条里；
-Tauri 子 webview 又没有 z-order API，所以"谁在上面"不能靠猜。
-把面板做成**下面独立的一个 webview** 而不是覆盖整窗的浮层，两个问题一起消失：
+Tauri 子 webview 又没有 z-order API，所以"谁在上面"不能靠猜：
+选项卡条永远在自己的区域里，任何页面都不可能盖住它。
 
-- 选项卡条永远可见 → 窗口永远能拖、能最小化/最大化/关闭；
-- 面板不需要自己的标题栏（选项卡条就是标题栏），也不会盖住拖拽区。
+`tabs/layout.rs` 里的单元测试直接断言这条不变量（`nothing_ever_overlaps_the_tab_strip`、
+`there_is_exactly_one_content_region`），而不是靠算术正确性的人眼复核。
 
-`tabs/layout.rs` 里的单元测试直接断言这条不变量（`nothing_ever_overlaps_the_tab_strip`），
-而不是靠算术正确性的人眼复核。
+> **曾经存在的第三个区（panel）已删除。** 早期版本把「新建/设置/首启」做成选项卡条
+> 下面一个 ≤380px 高的独立 webview，于是首启时选项卡条是空的、内容区是空的，
+> 用户面对的是一个没有选项卡的窗口。现在这三者都是普通选项卡：
+> `PageKind`（`tabs/state.rs`）定义它们，Rust 负责创建与去重（每个页面是单例），
+> 页面自己通过 `page-*` 的 IPC 驱动自己的动作。
 
 ---
 
@@ -94,6 +106,13 @@ npm test               # Rust 单元测试（cargo test）
 前端资源通过 Tauri 的 asset embedding 编进 exe，运行期不读任何磁盘资源目录；
 WebView2Loader 走静态导入库，所以没有任何随附 DLL。`npm run binary` 会实际清点
 `release/` 目录并在出现多余文件时**失败**，而不是只在文档里声称。
+
+> ⚠️ **改了 UI 一定要重新 build 二进制。** `dist/` 是编进 exe 的输入，而 cargo 默认
+> 不知道这件事 —— 只跑 `npm run build:ui` 会得到一个**仍是旧 CSS/JS** 的可执行文件，
+> 而 cargo 还打印 "Finished"。`src-tauri/build.rs` 里 `rerun-if-changed=../dist`
+> 就是为了堵住这个坑；命令行手敲 `cargo build` 时请确认它真的 `Compiling` 了。
+> 另外 `release/dshell.exe` 是 `npm run binary` 拷过去的，`target/release/` 里的那份
+> 才是 cargo 刚产出的 —— 两者时间戳不一致时，以上面这条命令为准。
 
 ### 上游契约回归
 
@@ -231,8 +250,12 @@ dshell 自己的三个区（选项卡条、面板、内容）由 `tabs/layout.rs
 ```
 web/                 dshell 自己的界面（三个独立文档）
   strip.ts           选项卡条 —— 窗口的标题栏，永远在
-  panel.ts           面板：新建连接 / 设置 / 首启向导
-  store.ts           两个界面共享的唯一数据层（Rust 是唯一权威）
+  pages/             dshell 自己的页面，每个都是普通选项卡
+    new.ts             新建连接（启动本地 / 连接已有 / 连接远程）
+    onboarding.ts      首启向导（唯一不可关闭的选项卡）
+    settings.ts        设置
+    shared.ts          三个页面共用的小工具 + bootPage 启动契约
+  store.ts           所有界面共享的唯一数据层（Rust 是唯一权威）+ PageStore
   ipc.ts             invoke 与事件的全部类型化封装（Rust 契约只声明一次）
   shell.ts           content webview 里的加载页 / 失败页
 src-tauri/src/
@@ -241,20 +264,42 @@ src-tauri/src/
   runtime/           ★ 四种后端的统一抽象 + Node 探测 + --help 能力探测
   dsh/               launch URL 解析（含 token 脱敏）、进程监管、无凭据探测
   tabs/              ★ 唯一允许碰 multi-webview API 的模块
-    layout.rs         几何计算：互不重叠的四区（纯函数，有断言测试）
-    manager.rs        选项卡管理、webview 编排、事件泵
-    state.rs          TabSpec（落盘）/ TabRuntime（仅内存）
+    layout.rs         几何计算：互不重叠的两区（纯函数，有断言测试）
+    manager.rs        选项卡管理、webview 编排、事件泵、页面选项卡的创建与去重
+    state.rs          TabSpec（落盘）/ TabRuntime（仅内存）/ PageKind
   commands.rs        invoke 面（全部 async）
   win.rs             Job object、广播环境变量变更
   env.rs             写 HKCU\Environment、可写性探测
   dialog.rs          原生目录/文件选择器
 ```
 
-**为什么 strip 与 panel 是两个 webview**：它们共享 `store.ts` 的数据层，但各自渲染。
-这样选项卡条在面板打开时仍然存在（可拖动、可关窗），而两个 webview 永远不会重叠 ——
-不需要依赖任何 z-order 行为。
+**为什么选项卡条仍是独立 webview**：它是窗口唯一的拖拽区与窗口按钮所在。
+内容区可以显示 DSH 页面，也可以显示 dshell 自己的页面，但**永远不可能盖住它** ——
+两个区互不重叠，所以不需要依赖任何 z-order 行为。
 
-### 三条代码级硬规则
+### 视觉：直接复用 DSH 的设计令牌
+
+`web/styles.css` 里 `--dsw-static-*` 与 `--dsw-alias-*` 的取值**逐字抄自 DSH 的
+`dsh-client-ui-theme`**（`design-platform.css` + 其 client bundle 的 alias 层），
+浅色与深色两套都抄；dshell 自己的 `--bg` / `--fg` / `--border` / `--radius` 等名字
+只是**绑到这些令牌上**，所以这个文件里每一个界面都是一步之遥指向 DSH 的调色板，
+而不是手挑的近似色。
+
+早先的版本是手挑的"差不多"灰阶加一个蓝色强调色 —— 和真正的 DSH 页面并排看，
+差别一眼可见：dshell 的页面是**另一个产品**的配色。注意 DSH 的强调色**不是蓝色**：
+`--dsw-alias-brand-primary` 浅色下近黑、深色下近白；整个体系里唯一的饱和色是
+`--dsw-alias-state-business-primary`（DeepSeek 蓝），只用于焦点与选中。
+
+滚动条同样照搬 DSH 的 `scrollbar.css`（5px、透明轨道、`radius: 999px`、
+`--dsw-alias-scrollbar-bg-l1` 系列），**包括它那道 `@supports not
+selector(::-webkit-scrollbar)` 闸门**：非 `auto` 的 `scrollbar-width` 会让 Chromium
+丢掉该元素上所有 `::-webkit-scrollbar*` 规则（连 `:hover` 一起），所以两条路径
+必须互斥而不是同时声明。
+
+dshell 无法真的 `@import` 这些样式表：它们加载在另一个 webview、另一个 origin 里，
+而 CSS 自定义属性不跨文档。抄值（而不是抄机制）是唯一的共享方式。
+
+### 四条代码级硬规则
 
 1. **任何操作 webview 的 command 必须是 `async fn`。** Windows 上在同步命令或
    事件处理器里创建 webview、读 cookie 都会**死锁**（wry#583）。
@@ -262,6 +307,29 @@ src-tauri/src/
    `unstable` feature 的爆炸半径限制在一个可评审的文件里，升级或回退都只动这里。
 3. **数据根的解析只有一处**（`root/mod.rs`）。其他地方一律从 `AppState` 取值，
    不允许自己拼 `DSHELL_HOME`。
+4. **webview label 是安全边界**：内容选项卡 `tab-*`、dshell 页面 `page-*`，
+   capability 只匹配后者。`state.rs` 里有测试断言二者不可能混淆。
+
+### 「每个页面都是一个选项卡」的可见后果
+
+| 场景 | 行为 |
+|---|---|
+| 首启 | 向导作为**选项卡**出现并占据焦点；选项卡条上它有一个 `✦` 图标 |
+| 关闭向导（未完成） | **被 Rust 拒绝**（`closable == false`），关闭按钮不渲染，中键与 `Ctrl+W` 同样无效 |
+| 完成向导 | 打开「新建连接」选项卡，然后关掉自己 |
+| 关掉最后一个选项卡 | 自动开一个「新建连接」选项卡 —— 空内容区不是本应用的状态 |
+| `Ctrl+T` / `+` | 打开或聚焦「新建连接」选项卡（单例） |
+| `Ctrl+,` / 齿轮 | 打开或聚焦「设置」选项卡（单例） |
+| 页面选项卡的重命名 / 重启后端 / 清空站点数据 | 右键菜单里不提供；Rust 也会拒绝重命名 |
+| 重启应用后 | 页面选项卡**不落盘**，按配置重建（向导仅在未完成时重建） |
+
+### 启动时到底开哪个选项卡
+
+| 状态 | 打开 |
+|---|---|
+| 没有可恢复的选项卡，向导未完成 | 向导，**并激活** |
+| 有可恢复的选项卡，向导未完成 | 向导，**在后台**（不打断用户已有的选项卡） |
+| 没有可恢复的选项卡，向导已完成 | 新建连接，激活 |
 
 ### 职责边界：项目目录归 DSH
 
@@ -283,7 +351,8 @@ src-tauri/src/
 |---|---|
 | 凭据 | 启动 URL 的 token 只在 Core 内存与 content webview 的导航请求里；不落盘、不进日志（日志行写入前 `token=***` 脱敏） |
 | tabs.json | 只存 `TabSpec`，结构上不可能含 token（含 token 的 `launch_url` 在另一个类型里，且只在内存） |
-| Content 面 | **不授予任何 capability** |
+| Content 面 | **不授予任何 capability**：`tab-*` 不匹配任何 capability 的 label，且它导航到的 DSH origin 也不是 local |
+| dshell 自己的页面 | 权限由 `page-*` label **与** local origin 两条同时决定；被导航到外部 origin 即失效 |
 | 明文远程 | 需显式勾选确认，且选项卡上**持续**显示 ⚠ |
 | `DSH_HOME` | 只接受绝对路径；相对路径在提交时就被拒绝 |
 | `--host 0.0.0.0` | dshell 永不生成（DSH 本身也硬拒绝） |
@@ -293,18 +362,36 @@ src-tauri/src/
 
 ## 10. 已知限制
 
-- **快捷键需要 dshell 自己的界面有焦点**（选项卡条或面板）。焦点在 DSH 内容区时，
-  `Ctrl+T` 之类会被 DSH 页面自己接收。设计文档建议的"隐藏窗口菜单加速键"在 Tauri 2
-  的 Windows 实现里没有可靠路径，因此本版**不声称**解决了这一点；点击选项卡条即可
-  把焦点交回 dshell。
-- **面板高度固定**（380px），不随内容自适应：chrome 面拿不到内容高度，
-  让 webview 跟着内容长高需要在 Rust 与前端之间来回同步尺寸，收益不值这个复杂度。
-  面板内部滚动。
+- **快捷键需要 dshell 自己的界面有焦点**（选项卡条，或某个 dshell 页面选项卡）。
+  焦点在 DSH 内容区时，`Ctrl+T` 之类会被 DSH 页面自己接收。设计文档建议的
+  "隐藏窗口菜单加速键"在 Tauri 2 的 Windows 实现里没有可靠路径，因此本版**不声称**
+  解决了这一点；点击选项卡条即可把焦点交回 dshell。
+- **dshell 页面的明暗跟随操作系统的 `prefers-color-scheme`**，而不是跟随 DSH 内部
+  的主题设置。DSH 的默认偏好就是 `system`（读同一个媒体查询），所以默认情况下两侧
+  一致；只有当用户在 DSH 里**手动**钉死一个与系统相反的明暗时，选项卡条与 dshell
+  页面才会和 DSH 内容不一致。dshell 读不到那个偏好 —— 它在另一个 webview 的页面里。
+  若将来要同步，只需在 dshell 页面 `body` 上加 `data-ds-dark-theme`：样式表里已经
+  按 DSH 的约定留了这个选择器。
+- **dshell 页面的选项卡标题是固定的**（首次配置 / 新建连接 / 设置），不跟随页面内容，
+  也不可重命名 —— 重命名一个按类型重建的单例选项卡只会让下次启动时消失。
 - **源码 checkout 模式**只做到"检测 + 能启动已构建的 checkout"，不做
   `pnpm install` / `pnpm run build` 的编排。DSH 的 workspace 规模让构建编排本身就是
   一个大特性，值得单独做。
 - **固定端口以保持登录态**是设置项，但默认关闭：`--port 0` 永不冲突，而 dshell
   每次都会重新捕获 token，所以 `LocalSpawn` 本来就不需要"跨重启保持登录"。
+- **shell 页面（加载页 / 失败页）目前没有 IPC**：它们在 `tab-*` 内容 webview 里，
+  而那个 label 不在任何 capability 中，所以加载页的进度轮询与失败页的按钮拿不到
+  返回值。这是既有的独立问题，与选项卡模型无关，未在本次改动中处理。
+- **选项卡条里的弹出菜单画不出来**：右键菜单与溢出菜单（`»`）都是选项卡条自己
+  DOM 里的 `position: fixed` 元素，而选项卡条是一个 38px 高的子 webview —— 子
+  webview 会把自己的内容裁剪到自己的矩形内，菜单因此被画在可视区之外（`»` 上
+  「所有选项卡」的菜单项确实已生成，只是看不见）。这与「页面即选项卡」无关
+  （选项卡条一直只有 38px，菜单一直如此），但重构去掉了面板层之后，它再没有
+  别的落脚点。修法是**原生弹出菜单**（`tauri::Window::popup_menu`，2.12 已有），
+  而不是重新引入第二个布局区域。在那之前，这些操作只能走快捷键（`Ctrl+R` 重载、
+  `Ctrl+W` 关闭、双击重命名），而「重启后端进程 / 清空站点数据 / 在系统浏览器中
+  打开」暂时没有入口 —— 需要时请按原生菜单的方向补齐，不要再往选项卡条里塞
+  DOM 弹层。
 - 只验证了 Windows（架构不排斥其他平台，但 job object 之外的分支没有实测）。
 
 ---
@@ -321,11 +408,12 @@ src-tauri/src/
   会让用户以为项目归属由 dshell 决定。现在目录是可选的「起始目录」，
   首启向导不再问它（见 §8「职责边界」）。
 - **简化**：设计里的 `tab-shell.html` / `tab-error.html` 两个资源合并为
-  `shell/placeholder.html` / `shell/error.html`，且失败详情由页面**回调**
-  Rust 获取（错误页是 dshell 自己的资源，所以它真的能 `invoke`）。
+  `shell/placeholder.html` / `shell/error.html`。⚠️ 设计说它们能回调 Rust，
+  但实际上 `tab-*` 不在任何 capability 里，所以这条并未生效（见「已知限制」）。
 - **修正**：设计里「面板把 chrome webview 长高」会**同时吃掉选项卡条**，
-  于是无边框窗口失去唯一的拖拽区、也失去窗口按钮。现在面板是选项卡条
-  **下面**独立的一个 webview（见 §2「窗口分区」）。
+  于是无边框窗口失去唯一的拖拽区、也失去窗口按钮。中途的实现改成选项卡条
+  **下面**独立的 panel webview；**现在进一步删除该区域** —— dshell 自己的页面
+  就是普通选项卡（见 §2、§8）。
 - **放弃**：隐藏窗口菜单加速键（见上文「已知限制」）。
 - **单文件**：设计文档说"没有官方单文件方案"。本实现通过「Tauri 不启用 bundle
   + 前端资源 asset embedding + WebView2Loader 走静态导入库」达到单个 `.exe`。

@@ -1,9 +1,9 @@
 // dshell chrome UI and shell-page logic.
 //
 // Deliberately dependency-free (no framework, no bundler beyond esbuild): the
-// whole UI is a tab strip plus four panels, and the interesting part of this app
-// lives in Rust. Keeping the chrome thin is what makes it easy to keep iterating
-// on the parts that matter.
+// whole UI is a tab strip plus a few page tabs, and the interesting part of this
+// app lives in Rust. Keeping the chrome thin is what makes it easy to keep
+// iterating on the parts that matter.
 
 // ---------------------------------------------------------------------- types
 
@@ -32,10 +32,22 @@ export interface Failure {
   stage?: string | null;
 }
 
+/**
+ * dshell's own pages. Every one of them is an ordinary tab.
+ *
+ * These are the slugs Rust knows them by (`PageKind::slug`), which is also what
+ * appears in `TabView.pageKind`.
+ */
+export type PageKind = 'onboarding' | 'new' | 'settings';
+
 export interface TabView {
   id: string;
   title: string;
   badge: string;
+  /** Set when this tab renders one of dshell's own pages. */
+  pageKind?: PageKind | null;
+  /** `false` only for the first-run wizard while it is still unfinished. */
+  closable: boolean;
   phase: TabPhase;
   origin?: string | null;
   workspace?: string | null;

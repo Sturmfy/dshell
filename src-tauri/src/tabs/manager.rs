@@ -37,20 +37,22 @@ use crate::dsh::url::LaunchUrl;
 use crate::error::{Action, Failure, FailureCode};
 use crate::runtime::{self, Flags, RuntimeSpec};
 use crate::tabs::layout;
-use crate::tabs::state::{phase, ConnectionKind, TabRuntime, TabSpec, TabView};
+use crate::tabs::state::{phase, ConnectionKind, PageKind, TabRuntime, TabSpec, TabView};
 
 pub const CHROME_LABEL: &str = "chrome";
-/// dshell's own panel (new tab / settings / onboarding), shown under the strip.
-pub const PANEL_LABEL: &str = "panel";
 pub const CHROME_PLACEHOLDER: &str = "shell/placeholder.html";
 pub const CHROME_ERROR: &str = "shell/error.html";
+
+/// Webview label prefix for dshell's own page tabs. The prefix is a security
+/// boundary, not a naming convention: a capability grants IPC to `page-*` only
+/// while that webview is on the app origin, and `tab-*` webviews are granted
+/// nothing at all (see `capabilities/`).
+pub const PAGE_LABEL_PREFIX: &str = "page-";
 
 pub const SHORTCUT_EVENT: &str = "dshell://shortcut";
 pub const TABS_CHANGED_EVENT: &str = "dshell://tabs-changed";
 pub const TAB_CHANGED_EVENT: &str = "dshell://tab-changed";
 pub const RUNTIME_PROGRESS_EVENT: &str = "dshell://runtime-progress";
-/// Broadcast so the strip and the panel always agree on which panel is open.
-pub const PANEL_EVENT: &str = "dshell://panel";
 
 /// Readiness budget for a runtime that may have to be fetched first.
 const COLD_START_BUDGET: Duration = Duration::from_secs(300);
@@ -79,6 +81,10 @@ impl TabEntry {
     fn id(&self) -> &str {
         &self.runtime.spec.id
     }
+
+    fn page_kind(&self) -> Option<PageKind> {
+        self.runtime.spec.connection.page()
+    }
 }
 
 pub struct TabManager {
@@ -87,8 +93,6 @@ pub struct TabManager {
     tabs: Mutex<HashMap<String, TabEntry>>,
     order: Mutex<Vec<String>>,
     active: Mutex<Option<String>>,
-    /// Whether dshell's own panel is occupying the area below the tab strip.
-    chrome_mode: Mutex<layout::ChromeMode>,
 }
 
 impl TabManager {
@@ -99,7 +103,6 @@ impl TabManager {
             tabs: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
             active: Mutex::new(None),
-            chrome_mode: Mutex::new(layout::ChromeMode::Strip),
         }
     }
 
@@ -116,6 +119,11 @@ impl TabManager {
         format!("tab-{id}")
     }
 
+    /// Webview label for one of dshell's own pages.
+    pub fn page_webview_label(kind: PageKind) -> String {
+        format!("{PAGE_LABEL_PREFIX}{}", kind.slug())
+    }
+
     // ------------------------------------------------------------- geometry
 
     fn window_logical_size(&self) -> (f64, f64) {
@@ -124,38 +132,22 @@ impl TabManager {
         (size.width as f64 / scale, size.height as f64 / scale)
     }
 
-    fn apply_bounds(&self, entries: &HashMap<String, TabEntry>, active: Option<&str>, mode: layout::ChromeMode) {
+    fn apply_bounds(&self, entries: &HashMap<String, TabEntry>, active: Option<&str>) {
         let (width, height) = self.window_logical_size();
 
-        // The strip is positioned first and in every mode: it is the window's
-        // only drag region, so losing it would make the window unmovable.
+        // The strip is positioned first and always: it is the window's only drag
+        // region, so losing it would make the window unmovable.
         if let Some(webview) = self.app.get_webview(CHROME_LABEL) {
             let bounds = layout::chrome_bounds(width);
             let _ = webview.set_position(LogicalPosition::new(bounds.x, bounds.y));
             let _ = webview.set_size(LogicalSize::new(bounds.width, bounds.height));
         }
 
-        // The panel webview exists only while a panel is open, and lives strictly
-        // between the strip and the content.
-        if let Some(webview) = self.app.get_webview(PANEL_LABEL) {
-            match layout::panel_bounds(width, height, mode) {
-                Some(bounds) => {
-                    let _ = webview.set_position(LogicalPosition::new(bounds.x, bounds.y));
-                    let _ = webview.set_size(LogicalSize::new(bounds.width, bounds.height));
-                }
-                None => {
-                    let parked = layout::parked_bounds(width);
-                    let _ = webview.set_position(LogicalPosition::new(parked.x, parked.y));
-                    let _ = webview.set_size(LogicalSize::new(parked.width, parked.height));
-                }
-            }
-        }
-
+        // Exactly one tab is ever inside the visible area — whether it holds a
+        // DSH page or one of dshell's own pages. Everything else is parked.
         for entry in entries.values() {
-            // Only the active tab is ever inside the visible area, and only when
-            // dshell is not showing a panel over it.
-            let bounds = if active == Some(entry.id()) && mode == layout::ChromeMode::Strip {
-                layout::content_bounds(width, height, mode)
+            let bounds = if active == Some(entry.id()) {
+                layout::content_bounds(width, height)
             } else {
                 layout::parked_bounds(width)
             };
@@ -166,103 +158,27 @@ impl TabManager {
         }
     }
 
-    pub async fn set_chrome_mode(&self, mode: layout::ChromeMode) {
-        {
-            let mut current = self.chrome_mode.lock().await;
-            *current = mode;
-        }
-        {
-            let entries = self.tabs.lock().await;
-            let active = self.active.lock().await.clone();
-            self.apply_bounds(&entries, active.as_deref(), mode);
-        }
-        if mode == layout::ChromeMode::Panel {
-            self.ensure_panel_webview().await;
-        }
-    }
-
-    /// Create the panel webview on first use.
-    ///
-    /// Its own webview rather than a taller chrome webview: the strip must stay
-    /// visible and draggable while a panel is open, and two adjacent webviews are
-    /// the only way to guarantee that without relying on stacking order.
-    async fn ensure_panel_webview(&self) {
-        if self.app.get_webview(PANEL_LABEL).is_some() {
-            return;
-        }
-        let (width, height) = self.window_logical_size();
-        let bounds = layout::panel_bounds(width, height, layout::ChromeMode::Panel)
-            .unwrap_or_else(|| layout::Bounds::new(0.0, layout::TAB_BAR_HEIGHT, width, 1.0));
-        let data_directory = self
-            .app
-            .try_state::<Arc<crate::AppState>>()
-            .map(|state| state.data_root.webview_data_dir().join("panel"))
-            .unwrap_or_else(|| PathBuf::from("panel"));
-        std::fs::create_dir_all(&data_directory).ok();
-
-        let result = self.window.add_child(
-            WebviewBuilder::new(PANEL_LABEL, WebviewUrl::App("panel.html".into()))
-                .data_directory(data_directory)
-                .disable_drag_drop_handler()
-                .focused(false),
-            LogicalPosition::new(bounds.x, bounds.y),
-            LogicalSize::new(bounds.width, bounds.height),
-        );
-        if let Err(err) = result {
-            process::debug_log(
-                &self
-                    .app
-                    .try_state::<Arc<crate::AppState>>()
-                    .map(|state| state.data_root.path.clone())
-                    .unwrap_or_default(),
-                &format!("panel webview creation failed: {err}"),
-            );
-        }
-    }
-
-    /// Point the panel webview at a panel. `None` closes it (parks it).
-    pub async fn show_panel(&self, panel: Option<&str>) {
-        let mode = if panel.is_some() {
-            layout::ChromeMode::Panel
-        } else {
-            layout::ChromeMode::Strip
-        };
-        self.set_chrome_mode(mode).await;
-        let _ = self.app.emit(
-            PANEL_EVENT,
-            serde_json::json!({ "panel": panel.unwrap_or("none") }),
-        );
-
-        let Some(panel) = panel else { return };
-        if let Some(webview) = self.app.get_webview(PANEL_LABEL) {
-            let url = asset_url(&self.app, "panel.html", &[("panel", panel.to_string())]);
-            let _ = webview.navigate(url);
-        }
-    }
-
-    pub async fn chrome_mode(&self) -> layout::ChromeMode {
-        *self.chrome_mode.lock().await
-    }
-
     /// Recompute every webview position. Called from the window resize handler,
     /// which runs on the main thread, so it must never block: `try_lock` is used
     /// and a missed frame is harmless because the next resize fixes it.
     pub fn relayout(&self) {
         let active = self.active.try_lock().ok().and_then(|guard| guard.clone());
-        let mode = self.chrome_mode.try_lock().ok().map(|guard| *guard).unwrap_or_default();
         let Ok(entries) = self.tabs.try_lock() else { return };
-        self.apply_bounds(&entries, active.as_deref(), mode);
+        self.apply_bounds(&entries, active.as_deref());
     }
 
     // ---------------------------------------------------------------- views
 
     pub async fn views(&self) -> Vec<TabView> {
+        // Resolved before the tab locks: `onboarding_done` takes the config lock,
+        // and a snapshot should never be the thing that decides lock order.
+        let onboarding_done = self.onboarding_done().await;
         let tabs = self.tabs.lock().await;
         let order = self.order.lock().await;
         order
             .iter()
             .filter_map(|id| tabs.get(id))
-            .map(build_view)
+            .map(|entry| build_view(entry, onboarding_done))
             .collect()
     }
 
@@ -283,10 +199,11 @@ impl TabManager {
     }
 
     pub async fn changed_one(&self, id: &str, reset: bool) {
+        let onboarding_done = self.onboarding_done().await;
         let payload = {
             let tabs = self.tabs.lock().await;
             tabs.get(id).map(|entry| {
-                serde_json::json!({ "tab": build_view(entry), "reset": reset })
+                serde_json::json!({ "tab": build_view(entry, onboarding_done), "reset": reset })
             })
         };
         if let Some(payload) = payload {
@@ -296,17 +213,84 @@ impl TabManager {
 
     // ---------------------------------------------------------- tab lifecycle
 
+    /// Claim a webview storage directory for a new webview.
+    ///
+    /// Two tabs on the same instance (same workspace and same DSH_HOME) would
+    /// collide on one directory. That shared directory is exactly what keeps a
+    /// login across restarts, so it is kept for the first tab and the newcomer
+    /// gets its own — two live webviews sharing one profile is not something
+    /// WebView2 supports.
+    async fn claim_data_dir(&self, id: &str, base_dir: PathBuf) -> PathBuf {
+        let data_dir = {
+            let tabs = self.tabs.lock().await;
+            if tabs.values().any(|entry| entry.data_dir == base_dir) {
+                base_dir.join(format!("session-{id}"))
+            } else {
+                base_dir
+            }
+        };
+        std::fs::create_dir_all(&data_dir).ok();
+        data_dir
+    }
+
+    /// Register a freshly created webview as a tab.
+    ///
+    /// `activate` is what a background page is made of: the wizard opens behind
+    /// the user's restored tabs on startup, and dshell's own pages are opened by
+    /// `open_page(.., false)` for exactly that case. When it is `false` the
+    /// current tab keeps the content area — unless there is no current tab, in
+    /// which case a window with nothing visible is worse than the caller's
+    /// preference, so the new tab takes it.
+    ///
+    /// Every lock here is scoped and released *before* [`Self::changed`], which
+    /// takes the same locks again: holding `tabs` across `changed()` is a
+    /// self-deadlock, not a slow frame.
+    async fn insert_tab(
+        &self,
+        spec: TabSpec,
+        webview: Webview,
+        instance_key: String,
+        instance_home: Option<String>,
+        data_dir: PathBuf,
+        activate: bool,
+    ) -> String {
+        let id = spec.id.clone();
+        let entry = TabEntry {
+            runtime: TabRuntime::new(spec),
+            webview,
+            instance_key,
+            instance_home,
+            data_dir,
+            first_load_seen: false,
+        };
+        {
+            let mut tabs = self.tabs.lock().await;
+            tabs.insert(id.clone(), entry);
+        }
+        {
+            let mut order = self.order.lock().await;
+            order.push(id.clone());
+        }
+        {
+            let mut active = self.active.lock().await;
+            if activate || active.is_none() {
+                *active = Some(id.clone());
+            }
+        }
+        {
+            let active = self.active.lock().await.clone();
+            let entries = self.tabs.lock().await;
+            self.apply_bounds(&entries, active.as_deref());
+        }
+        self.changed().await;
+        id
+    }
+
     /// Insert a tab and its webview, showing dshell's own loading page first so
     /// the tab is visible immediately even when the backend takes minutes.
     ///
     /// `instance_home` is the resolved DSH_HOME for this tab (or `None` when the
     /// user kept the system default) — `AppState` computes it from the data root.
-    ///
-    /// Two tabs on the same instance (same workspace and same DSH_HOME) would
-    /// collide on one webview data directory. That shared directory is exactly
-    /// what keeps a login across restarts, so it is kept for the first tab and
-    /// the newcomer gets its own — two live webviews sharing one profile is not
-    /// something WebView2 supports.
     pub async fn open_tab(
         &self,
         spec: TabSpec,
@@ -315,16 +299,7 @@ impl TabManager {
         let id = spec.id.clone();
         let label = Self::webview_label(&id);
         let (instance_key, base_dir) = instance_identity(&spec, &self.app);
-        let data_dir = {
-            let tabs = self.tabs.lock().await;
-            let taken = tabs.values().any(|entry| entry.data_dir == base_dir);
-            if taken {
-                base_dir.join(format!("session-{id}"))
-            } else {
-                base_dir
-            }
-        };
-        std::fs::create_dir_all(&data_dir).ok();
+        let data_dir = self.claim_data_dir(&id, base_dir).await;
 
         let app_for_title = self.app.clone();
         let app_for_load = self.app.clone();
@@ -382,47 +357,151 @@ impl TabManager {
                 )
             })?;
 
-        let entry = TabEntry {
-            runtime: TabRuntime::new(spec),
-            webview,
-            instance_key: instance_key.clone(),
-            instance_home,
-            data_dir,
-            first_load_seen: false,
-        };
-        {
-            let mut tabs = self.tabs.lock().await;
-            tabs.insert(id.clone(), entry);
-            let mut order = self.order.lock().await;
-            order.push(id.clone());
-            let mut active = self.active.lock().await;
-            *active = Some(id.clone());
-        }
-        {
-            let mode = self.chrome_mode().await;
-            let entries = self.tabs.lock().await;
-            let active = self.active.lock().await.clone();
-            self.apply_bounds(&entries, active.as_deref(), mode);
-        }
-        self.changed().await;
-        Ok(instance_key)
+        Ok(self
+            .insert_tab(spec, webview, instance_key, instance_home, data_dir, true)
+            .await)
     }
 
+    /// Open one of dshell's own pages as a tab.
+    ///
+    /// Each page is a singleton: asking for one that is already open activates
+    /// the existing tab instead of stacking up duplicates, which is what a user
+    /// pressing `Ctrl+,` twice expects.
+    ///
+    /// `activate: false` opens it in the background — the startup path that puts
+    /// the unfinished wizard behind the user's restored tabs. The activation rule
+    /// lives in [`Self::insert_tab`] so the "nothing visible" case is handled in
+    /// one place.
+    ///
+    /// The returned id is the tab's id, whether it was created or reused.
+    pub async fn open_page(&self, kind: PageKind, activate: bool) -> Result<String, Failure> {
+        if let Some(existing) = self.page_id(kind).await {
+            if activate {
+                self.activate(Some(&existing)).await;
+            }
+            return Ok(existing);
+        }
+
+        let id = Self::new_tab_id();
+        let label = Self::page_webview_label(kind);
+        let base_dir = self
+            .app
+            .try_state::<Arc<crate::AppState>>()
+            .map(|state| state.data_root.webview_data_dir().join(format!("page-{}", kind.slug())))
+            .unwrap_or_else(|| PathBuf::from(format!("page-{}", kind.slug())));
+        let data_dir = self.claim_data_dir(&id, base_dir).await;
+
+        let webview = self
+            .window
+            .add_child(
+                WebviewBuilder::new(label.clone(), WebviewUrl::App(kind.asset().into()))
+                    .data_directory(data_dir.clone())
+                    .disable_drag_drop_handler()
+                    .focused(false),
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(1.0, 1.0),
+            )
+            .map_err(|err| {
+                Failure::new(FailureCode::Internal, format!("创建页面失败：{err}")).with_detail(
+                    "这通常意味着 WebView2 运行时不可用或已损坏。\
+                     可在 https://developer.microsoft.com/microsoft-edge/webview2/ 安装。",
+                )
+            })?;
+
+        let spec = TabSpec {
+            id: id.clone(),
+            title: kind.title().to_string(),
+            connection: ConnectionKind::Page { kind },
+            display_origin: None,
+        };
+        let instance_key = format!("page-{}", kind.slug());
+        let id = self
+            .insert_tab(spec, webview, instance_key, None, data_dir, activate)
+            .await;
+
+        let root = self
+            .app
+            .try_state::<Arc<crate::AppState>>()
+            .map(|state| state.data_root.path.clone());
+        if let Some(root) = root {
+            process::debug_log(
+                &root,
+                &format!(
+                    "opened page tab {} ({}){}",
+                    kind.slug(),
+                    id,
+                    if activate { "" } else { ", background" }
+                ),
+            );
+        }
+        Ok(id)
+    }
+
+    /// The tab showing a given page, if it is open.
+    pub async fn page_id(&self, kind: PageKind) -> Option<String> {
+        let tabs = self.tabs.lock().await;
+        tabs.values()
+            .find(|entry| entry.page_kind() == Some(kind))
+            .map(|entry| entry.id().to_string())
+    }
+
+    /// A user-initiated close. Refuses the one tab that must not disappear: the
+    /// unfinished first-run wizard (see [`PageKind::closable`]).
     pub async fn close_tab(&self, id: &str) -> Result<(), Failure> {
+        if !self.is_closable(id).await {
+            return Err(Failure::new(
+                FailureCode::Internal,
+                "首次配置完成前不能关闭这个选项卡",
+            )
+            .with_detail("它决定 dshell 的数据根位置；完成后即可自由关闭。"));
+        }
+        self.remove_tab(id).await
+    }
+
+    /// Whether a tab may be closed right now.
+    ///
+    /// The same rule the view reports (`TabView::closable`), resolved once so the
+    /// strip's button and this answer cannot diverge.
+    pub async fn is_closable(&self, id: &str) -> bool {
+        let onboarding_done = self.onboarding_done().await;
+        let tabs = self.tabs.lock().await;
+        match tabs.get(id) {
+            Some(entry) => match entry.page_kind() {
+                Some(kind) => kind.closable(onboarding_done),
+                None => true,
+            },
+            None => true,
+        }
+    }
+
+    async fn onboarding_done(&self) -> bool {
+        match self.app.try_state::<Arc<crate::AppState>>() {
+            Some(state) => state.onboarding_done().await,
+            None => false,
+        }
+    }
+
+    /// Drop a tab and its webview. Also the path used internally, so it does not
+    /// re-check whether the tab wants to be kept.
+    ///
+    /// Closing the last tab opens a fresh new-connection tab instead of leaving
+    /// the content area blank: an empty content area is not a thing in this app,
+    /// because every page — including that one — is a tab.
+    pub async fn remove_tab(&self, id: &str) -> Result<(), Failure> {
         let entry = {
             let mut tabs = self.tabs.lock().await;
             tabs.remove(id)
         };
-        {
-            let mut order = self.order.lock().await;
-            order.retain(|existing| existing != id);
-        }
-
         let next_active = {
+            let mut order = self.order.lock().await;
+            let position = order.iter().position(|existing| existing == id);
+            order.retain(|existing| existing != id);
             let mut active = self.active.lock().await;
             if active.as_deref() == Some(id) {
-                let order = self.order.lock().await.clone();
-                *active = order.last().cloned();
+                // Chrome semantics: the right-hand neighbour, else the left.
+                *active = position
+                    .and_then(|index| order.get(index).cloned())
+                    .or_else(|| order.last().cloned());
             }
             active.clone()
         };
@@ -449,6 +528,11 @@ impl TabManager {
 
         self.activate(next_active.as_deref()).await;
         self.persist().await;
+
+        if self.tab_ids().await.is_empty() {
+            // Never leave the window with nothing in it.
+            self.open_page(PageKind::NewTab, true).await?;
+        }
         Ok(())
     }
 
@@ -458,9 +542,8 @@ impl TabManager {
             *active = id.map(str::to_string);
         }
         {
-            let mode = self.chrome_mode().await;
             let entries = self.tabs.lock().await;
-            self.apply_bounds(&entries, id, mode);
+            self.apply_bounds(&entries, id);
         }
         if let Some(id) = id {
             let webview = {
@@ -474,12 +557,19 @@ impl TabManager {
         self.changed().await;
     }
 
+    /// Page titles are fixed; a DSH tab's title follows its session.
     pub async fn rename(&self, id: &str, title: &str) -> Result<(), Failure> {
         {
             let mut tabs = self.tabs.lock().await;
             let entry = tabs
                 .get_mut(id)
                 .ok_or_else(|| Failure::new(FailureCode::Internal, "选项卡不存在"))?;
+            if entry.page_kind().is_some() {
+                return Err(Failure::new(
+                    FailureCode::Internal,
+                    "dshell 自己的页面不能被重命名",
+                ));
+            }
             entry.runtime.spec.title = title.to_string();
             // Mark it as user-chosen so the page title stops winning.
             entry.runtime.last_title = Some(title.to_string());
@@ -518,15 +608,27 @@ impl TabManager {
         self.tabs.lock().await.contains_key(id)
     }
 
+    /// Tab specs to persist. dshell's own pages are excluded on purpose: they are
+    /// recreated from config at startup (the wizard only while it is unfinished),
+    /// so a `tabs.json` that mentions them would resurrect the wrong ones.
     pub async fn specs(&self) -> (Vec<TabSpec>, Vec<String>) {
         let tabs = self.tabs.lock().await;
         let order = self.order.lock().await;
-        let specs = order
+        let persisted: Vec<&str> = order
             .iter()
-            .filter_map(|id| tabs.get(id))
+            .filter(|id| {
+                tabs.get(*id)
+                    .map(|entry| !entry.runtime.spec.connection.is_page())
+                    .unwrap_or(false)
+            })
+            .map(String::as_str)
+            .collect();
+        let specs = persisted
+            .iter()
+            .filter_map(|id| tabs.get(*id))
             .map(|entry| entry.runtime.spec.clone())
             .collect();
-        (specs, order.clone())
+        (specs, persisted.into_iter().map(str::to_string).collect())
     }
 
     pub async fn log_tail(&self, id: &str) -> Vec<crate::dsh::process::LogEntry> {
@@ -556,7 +658,22 @@ impl TabManager {
     // ---------------------------------------------------------------- restart
 
     /// Kill the backend (if any) and start a fresh one, then re-navigate.
+    ///
+    /// A page tab has no backend, so restarting one means reloading its document
+    /// — the same thing the user asked for, expressed in the only way that
+    /// applies to it.
     pub async fn restart(&self, id: &str) -> Result<(), Failure> {
+        let is_page = {
+            let tabs = self.tabs.lock().await;
+            tabs.get(id)
+                .ok_or_else(|| Failure::new(FailureCode::Internal, "选项卡不存在"))?
+                .page_kind()
+                .is_some()
+        };
+        if is_page {
+            return self.reload(id).await;
+        }
+
         let (spec, old_handle) = {
             let mut tabs = self.tabs.lock().await;
             let entry = tabs
@@ -584,6 +701,7 @@ impl TabManager {
                 let has_session = self.probe_session(id).await;
                 self.connect_attach(spec, url, plaintext, has_session).await
             }
+            ConnectionKind::Page { .. } => self.reload(id).await,
         }
     }
 
@@ -600,7 +718,10 @@ impl TabManager {
             ..
         } = spec.connection.clone()
         else {
-            return Err(Failure::new(FailureCode::Internal, "该选项卡不是本地启动类型"));
+            return Err(Failure::new(
+                FailureCode::Internal,
+                "该选项卡不是本地启动类型",
+            ));
         };
 
         let state = match self.app.try_state::<Arc<crate::AppState>>() {
@@ -1325,14 +1446,20 @@ pub fn current_state() -> Option<Arc<crate::AppState>> {
         .map(|state| state.inner().clone())
 }
 
-fn build_view(entry: &TabEntry) -> TabView {
+fn build_view(entry: &TabEntry, onboarding_done: bool) -> TabView {
     let runtime = &entry.runtime;
     let spec = &runtime.spec;
+    let page = spec.connection.page();
 
     TabView {
         id: spec.id.clone(),
         title: spec.title.clone(),
         badge: spec.connection.badge().to_string(),
+        // Only the wizard is ever unclosable, and only while onboarding is
+        // unfinished — the same rule `close_tab` enforces, so the strip can never
+        // offer a close button Rust refuses (or hide one that would work).
+        closable: page.map(|kind| kind.closable(onboarding_done)).unwrap_or(true),
+        page_kind: page.map(|kind| kind.slug().to_string()),
         phase: runtime.phase.clone(),
         origin: spec.display_origin.clone(),
         // Only a directory the user actually chose is reported. When unset, the
@@ -1368,6 +1495,7 @@ fn instance_identity(spec: &TabSpec, app: &AppHandle) -> (String, PathBuf) {
         .map(|state| state.data_root.webview_data_dir())
         .unwrap_or_else(|| PathBuf::from("."));
     let key = match &spec.connection {
+        ConnectionKind::Page { kind } => format!("page-{}", kind.slug()),
         ConnectionKind::LocalSpawn { workspace, dsh_home, .. } => {
             let home = match dsh_home {
                 DshHomeSetting::Custom { path } => Some(PathBuf::from(path)),
@@ -1387,7 +1515,13 @@ fn instance_identity(spec: &TabSpec, app: &AppHandle) -> (String, PathBuf) {
             .map(|parsed| crate::root::instance_key(&PathBuf::from(&parsed.origin), None))
             .unwrap_or_else(|| crate::root::instance_key(&PathBuf::from(&spec.id), None)),
     };
-    (key.clone(), base.join(format!("inst-{key}")))
+    // A page is a singleton, so its storage is addressed by kind rather than
+    // through the instance-key hash.
+    let dir = match spec.connection.page() {
+        Some(kind) => base.join(format!("page-{}", kind.slug())),
+        None => base.join(format!("inst-{key}")),
+    };
+    (key, dir)
 }
 
 fn asset_url(app: &AppHandle, relative: &str, query: &[(&str, String)]) -> tauri::Url {

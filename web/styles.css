@@ -1,54 +1,247 @@
 /*
- * dshell chrome styling.
+ * dshell styling: the tab strip, and dshell's own pages (first-run wizard, new
+ * connection, settings).
  *
- * The content area is 100% DSH's own rendering; dshell never injects CSS into a
- * DSH page. What this file does is make the strip above it *look like it belongs*
- * there: same density, same dark/light behaviour, neutral greys rather than a
- * competing brand palette.
+ * The content area of a DSH tab is 100% DSH's own rendering; dshell never injects
+ * CSS into a DSH page. This file exists so the strip above it, and the pages
+ * dshell renders itself, *look like they belong to the same application*.
  *
- * Colours follow `prefers-color-scheme`, using the same media query DSH's own
- * index.html uses, so the two halves of the window never disagree.
+ * ## The tokens below are DSH's own, copied by value
+ *
+ * `--dsw-static-*` and `--dsw-alias-*` are lifted verbatim from DSH's
+ * `dsh-client-ui-theme` (`design-platform.css` plus the alias layer in its client
+ * bundle), light and dark sets both. dshell's own `--bg` / `--fg` / `--border` /
+ * … names are then bound to them, so every surface in this file is one DSH token
+ * away from DSH's palette rather than a hand-picked approximation of it.
+ *
+ * Earlier revisions hand-picked "close enough" greys and a blue accent. Side by
+ * side with a real DSH page the difference was obvious: dshell's pages were a
+ * different product's palette. Note that DSH's accent is *not* blue —
+ * `--dsw-alias-brand-primary` is near-black in light mode and near-white in dark;
+ * the only saturated colour in the system is `--dsw-alias-state-business-primary`
+ * (DeepSeek blue), used for focus and selection.
+ *
+ * dshell cannot literally `@import` those stylesheets: they are loaded into a
+ * different webview, on a different origin, and CSS custom properties do not
+ * cross documents. Copying the values is the only way to share them.
+ *
+ * ## Light and dark
+ *
+ * DSH selects dark by putting `data-ds-dark-theme` on `body`; dshell matches that
+ * with a `prefers-color-scheme` media query that redefines the same aliases. DSH's
+ * default preference is "system" and it reads the same media query, so out of the
+ * box the two halves of the window agree. If a user pins DSH to a theme that
+ * disagrees with the OS, the strip and dshell's pages follow the OS.
  */
 
 :root {
   --bar-h: 38px;
-  --bg: #f3f3f3;
-  --bg-elevated: #ffffff;
-  --bg-sunken: #ebebeb;
-  --fg: #1f1f1f;
-  --fg-muted: #6b6b6b;
-  --fg-faint: #9a9a9a;
-  --border: #d7d7d7;
-  --border-strong: #c2c2c2;
-  --accent: #3b6ef5;
-  --accent-soft: rgba(59, 110, 245, 0.12);
-  --ok: #2ea043;
-  --warn: #d29922;
-  --danger: #d64545;
-  --radius: 6px;
-  --shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei',
-    Roboto, Helvetica, Arial, sans-serif;
-  --mono: 'Cascadia Mono', 'Consolas', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  /* --- DSH static palette (identical in both themes) --- */
+  --dsw-static-neutral-bluish-00: #fff;
+  --dsw-static-neutral-bluish-50: #f9fafb;
+  --dsw-static-neutral-bluish-100: #ebeef2;
+  --dsw-static-neutral-bluish-200: #e1e5ee;
+  --dsw-static-neutral-200: #e5e5e5;
+  --dsw-static-neutral-300: #d4d4d4;
+  --dsw-static-neutral-600: #545557;
+  --dsw-static-neutral-700: #3c3c3d;
+  --dsw-static-deepseek-400: #7aaaff;
+  --dsw-static-deepseek-500: #4176e6;
+  --dsw-static-red-400: #f25a5a;
+  --dsw-static-red-600: #ec1313;
+  --dsw-static-green-500: #22c55e;
+  --dsw-static-amber-500: #f59e0b;
+
+  /* --- DSH scales --- */
+  --dsw-radius-xs: 4px;
+  --dsw-radius-sm: 8px;
+  --dsw-radius-md: 12px;
+  --dsw-radius-lg: 16px;
+  --dsw-radius-xl: 20px;
+
+  --dsw-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --ds-font-family-code: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono',
+    Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
+
+  /* --- DSH alias layer, light --- */
+  --dsw-alias-bg-base: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-bg-layer-1: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-bg-layer-2: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-bg-layer-3: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-bg-overlay: var(--dsw-static-neutral-bluish-100);
+  --dsw-alias-bg-module-platform: #f5f6f7;
+  --dsw-alias-label-primary: #0f1115;
+  --dsw-alias-label-secondary: #61666b;
+  --dsw-alias-label-tertiary: #81858c;
+  --dsw-alias-label-caption: #adb2b8;
+  --dsw-alias-label-dimmed: var(--dsw-static-neutral-bluish-200);
+  --dsw-alias-brand-primary: #0f1115;
+  --dsw-alias-label-primary-foreground: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-button-primary-hover: #43454a;
+  --dsw-alias-border-l1: #0000000a;
+  --dsw-alias-border-l2: #0000001a;
+  --dsw-alias-border-l3: #0000001f;
+  --dsw-alias-border-l4: #00000029;
+  --dsw-alias-interactive-bg-hover: #2631480f;
+  --dsw-alias-interactive-bg-active: #2631481a;
+  --dsw-alias-state-business-primary: var(--dsw-static-deepseek-500);
+  --dsw-alias-state-error-primary: var(--dsw-static-red-600);
+  --dsw-alias-state-success-primary: var(--dsw-static-green-500);
+  --dsw-alias-state-warn-primary: var(--dsw-static-amber-500);
+  --dsw-alias-state-idle-primary: var(--dsw-static-neutral-300);
+  --dsw-alias-scrollbar-bg-l1: var(--dsw-static-neutral-200);
+  --dsw-alias-scrollbar-hover-l1: var(--dsw-static-neutral-300);
+  --dsw-shadow-lv1: 0 2px 4px 0 #0000000d;
+  --dsw-shadow-lv2: 0 4px 12px 0 #00000005, 0 2px 8px 0 #0000000a;
+  --dsw-shadow-lv3: 0 0 1px 0 #0003, 0 0 4px 0 #00000005, 0 12px 32px 0 #00000014;
+
+  /* --- dshell's names, bound to DSH aliases ---
+   *
+   * Kept as the vocabulary this file and the page markup already use; the values
+   * are the only thing that changed. Every one of them is a DSH alias, so a
+   * surface can be traced straight back to the token DSH would have used. */
+  --bg: var(--dsw-alias-bg-base);
+  --bg-elevated: var(--dsw-alias-bg-layer-1);
+  --bg-sunken: var(--dsw-alias-bg-module-platform);
+  --fg: var(--dsw-alias-label-primary);
+  --fg-muted: var(--dsw-alias-label-secondary);
+  --fg-faint: var(--dsw-alias-label-tertiary);
+  --border: var(--dsw-alias-border-l2);
+  --border-strong: var(--dsw-alias-border-l3);
+  --accent: var(--dsw-alias-state-business-primary);
+  --accent-soft: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
+  --ok: var(--dsw-alias-state-success-primary);
+  --warn: var(--dsw-alias-state-warn-primary);
+  --danger: var(--dsw-alias-state-error-primary);
+  --radius: var(--dsw-radius-md);
+  --shadow: var(--dsw-shadow-lv3);
+  --font: var(--dsw-font-family);
+  --mono: var(--ds-font-family-code);
+  --focus-ring: 2px solid var(--dsw-alias-state-business-primary);
 }
 
+/* DSH's dark alias layer. Same token names, DSH's dark values.
+ *
+ * Selected by `prefers-color-scheme` because that is the only signal a dshell
+ * document has: DSH's own preference lives in its page, in another webview, and
+ * cannot be read from here. An explicit `data-ds-dark-theme` on `body` overrides
+ * it, so the two stay one attribute apart if dshell ever learns DSH's choice —
+ * and it costs nothing when nothing sets it. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1f1f1f;
-    --bg-elevated: #2a2a2a;
-    --bg-sunken: #191919;
-    --fg: #e8e8e8;
-    --fg-muted: #a0a0a0;
-    --fg-faint: #7a7a7a;
-    --border: #3a3a3a;
-    --border-strong: #4a4a4a;
-    --accent: #5b8cff;
-    --accent-soft: rgba(91, 140, 255, 0.18);
-    --ok: #3fb950;
-    --warn: #d29922;
-    --danger: #f06a6a;
-    --shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+    --dsw-alias-bg-base: #151517;
+    --dsw-alias-bg-layer-1: #232324;
+    --dsw-alias-bg-layer-2: #2c2c2e;
+    --dsw-alias-bg-layer-3: #353638;
+    --dsw-alias-bg-overlay: #3c3c3d;
+    --dsw-alias-bg-module-platform: #353638;
+    --dsw-alias-label-primary: #f9fafb;
+    --dsw-alias-label-secondary: #cfd3d6;
+    --dsw-alias-label-tertiary: #adb2b8;
+    --dsw-alias-label-caption: #81858c;
+    --dsw-alias-label-dimmed: #43454a;
+    --dsw-alias-brand-primary: #f9fafb;
+    --dsw-alias-label-primary-foreground: #0f1115;
+    --dsw-alias-button-primary-hover: var(--dsw-static-neutral-bluish-100);
+    --dsw-alias-border-l1: #ffffff0f;
+    --dsw-alias-border-l2: #ffffff1f;
+    --dsw-alias-border-l3: #ffffff29;
+    --dsw-alias-border-l4: #fff3;
+    --dsw-alias-interactive-bg-hover: #ffffff14;
+    --dsw-alias-interactive-bg-active: #ffffff24;
+    --dsw-alias-state-business-primary: var(--dsw-static-deepseek-400);
+    --dsw-alias-state-error-primary: var(--dsw-static-red-400);
+    --dsw-alias-state-idle-primary: var(--dsw-static-neutral-600);
+    --dsw-alias-scrollbar-bg-l1: var(--dsw-static-neutral-700);
+    --dsw-alias-scrollbar-hover-l1: var(--dsw-static-neutral-600);
+    --dsw-shadow-lv1: 0 2px 4px 0 #00000040;
+    --dsw-shadow-lv2: 0 4px 12px 0 #00000033, 0 2px 8px 0 #0000003d;
+    --dsw-shadow-lv3: 0 0 1px 0 #0006, 0 0 4px 0 #00000033, 0 12px 32px 0 #00000059;
   }
+}
+
+body[data-ds-dark-theme] {
+  --dsw-alias-bg-base: #151517;
+  --dsw-alias-bg-layer-1: #232324;
+  --dsw-alias-bg-layer-2: #2c2c2e;
+  --dsw-alias-bg-layer-3: #353638;
+  --dsw-alias-bg-overlay: #3c3c3d;
+  --dsw-alias-bg-module-platform: #353638;
+  --dsw-alias-label-primary: #f9fafb;
+  --dsw-alias-label-secondary: #cfd3d6;
+  --dsw-alias-label-tertiary: #adb2b8;
+  --dsw-alias-label-caption: #81858c;
+  --dsw-alias-label-dimmed: #43454a;
+  --dsw-alias-brand-primary: #f9fafb;
+  --dsw-alias-label-primary-foreground: #0f1115;
+  --dsw-alias-button-primary-hover: var(--dsw-static-neutral-bluish-100);
+  --dsw-alias-border-l1: #ffffff0f;
+  --dsw-alias-border-l2: #ffffff1f;
+  --dsw-alias-border-l3: #ffffff29;
+  --dsw-alias-border-l4: #fff3;
+  --dsw-alias-interactive-bg-hover: #ffffff14;
+  --dsw-alias-interactive-bg-active: #ffffff24;
+  --dsw-alias-state-business-primary: var(--dsw-static-deepseek-400);
+  --dsw-alias-state-error-primary: var(--dsw-static-red-400);
+  --dsw-alias-state-idle-primary: var(--dsw-static-neutral-600);
+  --dsw-alias-scrollbar-bg-l1: var(--dsw-static-neutral-700);
+  --dsw-alias-scrollbar-hover-l1: var(--dsw-static-neutral-600);
+  --dsw-shadow-lv1: 0 2px 4px 0 #00000040;
+  --dsw-shadow-lv2: 0 4px 12px 0 #00000033, 0 2px 8px 0 #0000003d;
+  --dsw-shadow-lv3: 0 0 1px 0 #0006, 0 0 4px 0 #00000033, 0 12px 32px 0 #00000059;
+}
+
+/* ------------------------------------------------------------------ scrollbar */
+
+/*
+ * Verbatim from DSH's `ui-theme/src/styles/scrollbar.css`, including the reason
+ * for the `@supports` gate: a non-`auto` `scrollbar-width`/`scrollbar-color`
+ * makes Chromium drop every `::-webkit-scrollbar*` rule for that element,
+ * including `:hover` — so the two paths must be mutually exclusive rather than
+ * both declared. This is what makes the strip scroll like a DSH page instead of
+ * like a browser default.
+ */
+:root {
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l1);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l1);
+  --dsh-scrollbar-thumb-border: 0px;
+  --dsh-scrollbar-track-margin: 0px;
+  --dsh-scrollbar-width: 5px;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  html,
+  html * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--dsh-scrollbar-thumb) transparent;
+  }
+}
+
+::-webkit-scrollbar {
+  width: var(--dsh-scrollbar-width);
+  height: var(--dsh-scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+  margin-block: var(--dsh-scrollbar-track-margin);
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: var(--dsh-scrollbar-thumb-border) solid transparent;
+  border-radius: 999px;
+  background: var(--dsh-scrollbar-thumb);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--dsh-scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 * {
@@ -60,7 +253,10 @@ body {
   margin: 0;
   padding: 0;
   font-family: var(--font);
-  font-size: 13px;
+  /* DSH's body text metric. The strip is denser (it is a title bar), so it
+     overrides this below rather than the other way round. */
+  font-size: 14px;
+  line-height: 22px;
   color: var(--fg);
   background: var(--bg);
   overflow: hidden;
@@ -80,12 +276,17 @@ textarea {
   color: inherit;
 }
 
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}
+
 /* ------------------------------------------------------------- tab strip */
 
 /*
  * The strip is its own webview, 38px tall, sitting above everything. It is the
  * window's title bar: this is where the drag region and the window buttons live,
- * and it stays on screen while a panel is open.
+ * and it stays on screen no matter what the content area is showing.
  *
  * There is no separate absolutely-positioned drag overlay any more. The strip
  * itself is the drag region (`data-tauri-drag-region="deep"` in the HTML), and
@@ -95,6 +296,9 @@ textarea {
  */
 .strip-body {
   height: 100vh;
+  /* Denser than a page: the strip is a title bar, not content. */
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .chrome {
@@ -103,7 +307,7 @@ textarea {
   width: 100%;
   height: var(--bar-h);
   background: var(--bg-sunken);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 0.5px solid var(--border);
 }
 
 .chrome__spacer {
@@ -143,7 +347,7 @@ textarea {
 }
 
 .tab:hover {
-  background: rgba(127, 127, 127, 0.12);
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--fg);
 }
 
@@ -151,7 +355,6 @@ textarea {
   background: var(--bg);
   border-color: var(--border);
   color: var(--fg);
-  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 .tab--dragging {
@@ -222,13 +425,43 @@ textarea {
   flex: 0 0 auto;
 }
 
+/* A page tab is dshell's own surface, not a DSH session: give it an icon rather
+   than a connection status dot, so the two read differently at a glance. The
+   icon carries that distinction, so the title does not need to shout. */
+.tab--page .tab__title {
+  font-weight: 400;
+}
+
+.tab__icon {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tab--active .tab__icon {
+  color: var(--fg);
+}
+
+/* Shown in place of the close button for the one tab that may not be closed. */
+.tab__pinned {
+  flex: 0 0 auto;
+  width: 18px;
+  text-align: center;
+  color: var(--fg-faint);
+  font-size: 12px;
+  line-height: 1;
+}
+
 .tab__close {
   flex: 0 0 auto;
   width: 18px;
   height: 18px;
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--dsw-radius-xs);
   background: transparent;
   color: var(--fg-muted);
   opacity: 0;
@@ -243,7 +476,7 @@ textarea {
 }
 
 .tab__close:hover {
-  background: rgba(127, 127, 127, 0.25);
+  background: var(--dsw-alias-interactive-bg-active);
   color: var(--fg);
 }
 
@@ -252,8 +485,8 @@ textarea {
   min-width: 0;
   height: 20px;
   padding: 0 4px;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
+  border: 0.5px solid var(--accent);
+  border-radius: var(--dsw-radius-xs);
   background: var(--bg-elevated);
 }
 
@@ -264,21 +497,22 @@ textarea {
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: var(--radius);
+  border-radius: var(--dsw-radius-sm);
   background: transparent;
   color: var(--fg-muted);
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1;
   position: relative;
   z-index: 1;
 }
 
 .tab__new:hover {
-  background: rgba(127, 127, 127, 0.18);
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--fg);
 }
 
-/* The new-tab panel is open: the "+" is a toggle, so it shows its state. */
+/* The active tab is a dshell page: highlight the control that opened it, so the
+   gear and "+" read as "this page is showing" rather than as blind toggles. */
 .tab__new--active,
 .wc--active {
   background: var(--accent-soft);
@@ -290,8 +524,8 @@ textarea {
   align-self: center;
   height: 26px;
   padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 0.5px solid var(--border);
+  border-radius: var(--dsw-radius-sm);
   background: var(--bg-elevated);
   color: var(--fg-muted);
   position: relative;
@@ -316,29 +550,38 @@ textarea {
 }
 
 .wc:hover {
-  background: rgba(127, 127, 127, 0.2);
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--fg);
 }
 
+/* The one place a hard red is correct: this is the OS close affordance, and it
+   reads as such in DSH's own window chrome too. */
 .wc--close:hover {
-  background: #d64545;
-  color: #fff;
+  background: var(--danger);
+  color: var(--dsw-static-neutral-bluish-00);
 }
 
-/* ----------------------------------------------------------------- panel */
+/* --------------------------------------------------------- dshell pages */
 
 /*
- * The panel is its own webview, filling the region between the tab strip and the
- * content area. Its host scrolls, so tall forms (onboarding, settings) never clip
- * their action buttons off the bottom edge.
+ * dshell's own pages fill the content area exactly as a DSH page does, because
+ * they are tabs. There is no separate geometry for them: the strip above is
+ * still the title bar, so a page needs no title bar of its own.
+ *
+ * A page is a scrolling main column inside a fixed frame, plus an optional
+ * action footer that stays put. The frame matters for long forms (the wizard,
+ * settings): without it the primary action scrolls away and the user has to
+ * hunt for the button they already found once. It is an opaque bar rather than
+ * a floating one so it reads as part of the page, which is how DSH's own
+ * settings footers behave.
  */
-.panel-body {
+.page-body {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
 }
 
-.panel {
+.page {
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -349,48 +592,378 @@ textarea {
   user-select: text;
 }
 
-/* Keep the two webviews visually continuous: the strip draws its own bottom
-   border, so the panel must not add a second one. */
-.panel__scroll {
+/* The column is the scroll container; the header and footer stay put. */
+.page__scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 16px 20px 24px;
+  /* A form spread across a 2560px monitor is unreadable; centre it and cap it. */
+  padding: 32px max(24px, calc((100% - 880px) / 2)) 40px;
 }
 
-.panel__head {
+.page__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  min-width: 0;
+}
+
+.page__foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px max(24px, calc((100% - 880px) / 2));
+  border-top: 0.5px solid var(--border);
+  background: var(--bg);
+}
+
+/* Pushes trailing controls to the right without a second container.
+   The `.btn` reset matters: a bare `<button>` spacer inherits the browser's
+   default chrome, which renders an opaque bar across the footer. */
+.page__foot-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: default;
+}
+
+.page__foot > .field__hint {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+/* ------------------------------------------------------- page typography */
+
+.page__title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 400;
+  color: var(--fg);
+}
+
+.page__sub {
+  margin: 6px 0 0;
+  max-width: 62ch;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.page__loading {
+  color: var(--fg-muted);
+}
+
+/* ----------------------------------------------------------------- section */
+
+/*
+ * A section is DSH's settings group: a title, an optional one-line
+ * explanation, then content separated by hairline rules. It gives a long form a
+ * rhythm to scan, which is what the previous single flat column lacked.
+ *
+ * The section title is smaller and heavier than a row label on purpose: both are
+ * the same size in DSH's own type scale, and leaving them identical made a
+ * section heading read as another field label.
+ */
+.section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.section__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 10px;
+}
+
+.section__title {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--fg);
+}
+
+.section__desc {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* Hairline rather than a card: DSH separates settings rows with a rule, and a
+   page of nested cards reads as boxes inside boxes. */
+.section__body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.section__body > .row:first-child,
+.section__body > *:first-child {
+  border-top: 0.5px solid var(--border);
+}
+
+/* One settings-style row: label and optional control on a line, hint beneath. */
+.row {
+  padding: 14px 0;
+  border-bottom: 0.5px solid var(--border);
+  min-width: 0;
+}
+
+/* A row whose content is not a label/control pair: full-bleed content under the
+   same rule, so cards and radio stacks sit in the same rhythm as plain rows. */
+.row--plain {
+  display: block;
+}
+
+.row__main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.row__main > .row__label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.row__label {
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.row__control {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.row__control > input[type='text'],
+.row__control > select {
+  width: 220px;
+  flex: 0 0 auto;
+}
+
+/* A row whose control is the field itself: the label sits above and the input
+   takes the full width, which is what a filesystem path or a URL needs. In the
+   side-by-side form it would be squeezed into the 220px gutter meant for a
+   single select. */
+.row--wide .row__main {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.row__control--wide {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.row__control--wide > input[type='text'] {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Small clickable values — recent directories, and anything else that is a
+   shortcut rather than a control. */
+.chips {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 3px 9px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--fg);
+}
+
+/* ------------------------------------------------------------------- cards */
+
+/* A responsive set of selectable cards — the three ways to connect. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--bg-elevated);
+  text-align: left;
+  cursor: pointer;
+}
+
+.card:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* Selection is carried by the border *and* the tint, so it survives both
+   themes and does not rely on colour alone. */
+.card--selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.card--disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.card__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-bottom: 2px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.card--selected .card__icon {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+.card__title {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--fg);
+}
+
+.card__desc {
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* Stacked form controls inside a card, for the radio-style choices. */
+.card__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card--static {
+  cursor: default;
+}
+
+.card--static:hover {
+  background: var(--bg-elevated);
+}
+
+/* -------------------------------------------------------------------- misc */
+
+/* A labelled fact list: monospace value, label in the muted role. */
+.kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 18px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* Inside a section body, so the facts get the same rule the rows do. */
+.kv--padded {
+  padding: 14px 0;
+  border-bottom: 0.5px solid var(--border);
+}
+
+.kv dt {
+  color: var(--fg-muted);
+}
+
+.kv dd {
+  margin: 0;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* A hairline-delimited list of checks, so several results scan as one table
+   instead of a loose stack. */
+.checks {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.check {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
+  padding: 11px 0;
+  border-bottom: 0.5px solid var(--border);
+  min-width: 0;
 }
 
-.panel__title {
-  font-size: 15px;
-  font-weight: 600;
-  margin: 0;
+.check:first-child {
+  border-top: 0.5px solid var(--border);
 }
 
-.panel__sub {
+.check__mark {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+}
+
+.check__mark--ok {
+  color: var(--ok);
+}
+.check__mark--warn {
+  color: var(--warn);
+}
+.check__mark--bad {
+  color: var(--danger);
+}
+
+.check__value {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--fg-muted);
-  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }
 
-.panel__grid {
-  display: grid;
-  grid-template-columns: 260px 1fr;
-  gap: 14px;
-  align-items: start;
-}
-
-@media (max-width: 900px) {
-  .panel__grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* --------------------------------------------------------------- pieces */
+/* ------------------------------------------------------------------ pieces */
 
 .choices {
   display: grid;
@@ -402,15 +975,15 @@ textarea {
   align-items: flex-start;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
   background: var(--bg-elevated);
   text-align: left;
   width: 100%;
 }
 
 .choice:hover {
-  border-color: var(--border-strong);
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .choice--active {
@@ -429,7 +1002,7 @@ textarea {
 }
 
 .choice__label {
-  font-weight: 600;
+  font-weight: 400;
   display: block;
 }
 
@@ -437,7 +1010,8 @@ textarea {
   color: var(--fg-muted);
   display: block;
   margin-top: 2px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .field {
@@ -446,9 +1020,15 @@ textarea {
   margin-bottom: 12px;
 }
 
+/* A control wrapper that is not a labelled field: no spacing of its own, so the
+   surrounding row owns the layout. */
+.field--bare {
+  margin-bottom: 0;
+}
+
 .field__label {
   color: var(--fg-muted);
-  font-weight: 600;
+  font-weight: 400;
 }
 
 .field__row {
@@ -458,61 +1038,95 @@ textarea {
 
 .field__hint {
   color: var(--fg-faint);
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .field__error {
   color: var(--danger);
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 18px;
 }
 
+/*
+ * DSH's `Input`: a 32px box, a hairline `border-l4` stroke, `bg-layer-1` fill,
+ * `radius-md`, and a business-primary stroke on focus. The focus indication is a
+ * border colour rather than a ring, which is why `outline` is cleared.
+ */
 input[type='text'],
 input[type='password'],
 select {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  height: 32px;
+  padding: 0 10px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
   background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: 14px;
+}
+
+input[type='text']::placeholder {
+  color: var(--dsw-alias-label-dimmed);
 }
 
 input[type='text']:focus,
 select:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--dsw-alias-state-business-primary);
 }
 
+select {
+  cursor: pointer;
+}
+
+/* DSH's `Button`, outlined variant: a 36px control, `radius-md`, a hairline
+   `border-l3` stroke, and `interactive-bg-hover` on hover. */
 .btn {
-  padding: 6px 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 14px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: var(--fg);
   white-space: nowrap;
 }
 
-.btn:hover {
-  border-color: var(--accent);
+.btn:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.btn:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-active);
 }
 
 .btn--primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  border-color: transparent;
+  background: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-label-primary-foreground);
 }
 
-.btn--primary:hover {
-  filter: brightness(1.08);
+.btn--primary:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-hover);
 }
 
 .btn--danger {
   color: var(--danger);
-  border-color: var(--danger);
+  border-color: var(--dsw-alias-border-l3);
   background: transparent;
 }
 
+.btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
 .btn:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
@@ -533,15 +1147,22 @@ select:focus {
   gap: 8px;
   align-items: flex-start;
   padding: 6px 8px;
-  border-radius: var(--radius);
+  border-radius: var(--dsw-radius-sm);
 }
 
 .radio:hover {
-  background: rgba(127, 127, 127, 0.08);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* The chosen option keeps its tint, so a radio stack reads as a selection even
+   when the radios themselves are easy to miss. */
+.radio--selected {
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .radio input {
   margin-top: 2px;
+  accent-color: var(--dsw-alias-state-business-primary);
 }
 
 .radio__body {
@@ -553,152 +1174,109 @@ select:focus {
   color: var(--fg-muted);
   font-family: var(--mono);
   font-size: 12px;
+  line-height: 18px;
   user-select: text;
 }
 
+/* DSH's `settings-card`: the card fill and stroke are alias tokens bound on
+   `body` there, so the same pair is inlined here. */
 .notice {
   display: flex;
   gap: 8px;
   padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
+  border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-border-l4);
   background: var(--bg-elevated);
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 18px;
   margin-bottom: 12px;
 }
 
 .notice--warn {
-  border-color: var(--warn);
-  background: rgba(210, 153, 34, 0.1);
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated));
 }
 
 .notice--danger {
-  border-color: var(--danger);
-  background: rgba(214, 69, 69, 0.1);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated));
 }
 
 .notice--ok {
-  border-color: var(--ok);
-  background: rgba(46, 160, 67, 0.1);
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elevated));
 }
 
-.kv {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 14px;
-  font-size: 12px;
-}
-
-.kv dt {
-  color: var(--fg-muted);
-}
-
-.kv dd {
-  margin: 0;
-  font-family: var(--mono);
-  overflow-wrap: anywhere;
-  user-select: text;
-}
-
-.empty {
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 14px;
-  height: 100%;
-  padding: 40px;
-}
-
-.empty h1 {
-  margin: 0;
-  font-size: 20px;
-}
-
-.empty p {
-  margin: 0;
-  color: var(--fg-muted);
-  max-width: 540px;
-  text-align: center;
-  line-height: 1.7;
-}
-
+/* A stepper for the wizard. The number is the state marker; the current step is
+   the only one at full contrast, so the position in the flow is readable at a
+   glance without counting. */
 .steps {
   display: flex;
-  gap: 8px;
   align-items: center;
-  margin-bottom: 16px;
-}
-
-.step {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--fg-faint);
-}
-
-.step--active {
-  color: var(--fg);
-  font-weight: 600;
-}
-
-.step__num {
-  display: grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: 1px solid currentColor;
-  font-size: 11px;
-}
-
-.step__sep {
-  color: var(--fg-faint);
-}
-
-.checks {
-  display: grid;
-  gap: 6px;
+  gap: 10px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.check {
+.step {
   display: flex;
+  align-items: center;
   gap: 8px;
-  align-items: baseline;
-}
-
-.check__mark {
-  width: 16px;
-  text-align: center;
-}
-
-.check__mark--ok {
-  color: var(--ok);
-}
-.check__mark--warn {
-  color: var(--warn);
-}
-.check__mark--bad {
-  color: var(--danger);
-}
-
-.check__value {
-  color: var(--fg-muted);
-  font-family: var(--mono);
+  color: var(--fg-faint);
   font-size: 12px;
+  line-height: 18px;
 }
 
+.step__num {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 0.5px solid currentColor;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.step--active {
+  color: var(--fg);
+}
+
+.step--active .step__num {
+  border-color: transparent;
+  background: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+
+.step--done {
+  color: var(--fg-muted);
+}
+
+.step--done .step__num {
+  border-color: transparent;
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--fg-muted);
+}
+
+.step__sep {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 0.5px;
+  background: var(--border);
+}
+
+/* Menu surface: DSH's menus are an elevated layer with the shared elevation
+   stroke, not a hairline border on the page background. */
 .menu {
   position: fixed;
   z-index: 20;
   min-width: 220px;
   padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-shadow-lv3);
 }
 
 .menu__item {
@@ -707,12 +1285,12 @@ select:focus {
   text-align: left;
   padding: 6px 10px;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--dsw-radius-sm);
   background: transparent;
 }
 
 .menu__item:hover {
-  background: var(--accent-soft);
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .menu__item--danger {
@@ -730,12 +1308,12 @@ select:focus {
   z-index: 30;
   max-width: 420px;
   padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-shadow-lv3);
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 18px;
   pointer-events: none;
   user-select: text;
 }
@@ -762,26 +1340,28 @@ select:focus {
   z-index: 40;
   max-width: 360px;
   padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow);
-  line-height: 1.6;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-shadow-lv3);
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .toast--error {
-  border-color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
 }
 
 .scroll {
   max-height: 220px;
   overflow: auto;
   padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-sm);
   background: var(--bg-sunken);
   font-family: var(--mono);
   font-size: 12px;
+  line-height: 18px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
@@ -808,7 +1388,7 @@ select:focus {
 .shell__spinner {
   width: 26px;
   height: 26px;
-  border: 2px solid var(--border-strong);
+  border: 2px solid var(--dsw-alias-border-l3);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.9s linear infinite;
@@ -827,20 +1407,24 @@ select:focus {
 
 .shell__title {
   margin: 0;
-  font-size: 17px;
-  font-weight: 600;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+  color: var(--fg);
 }
 
 .shell__subtitle {
   margin: 0;
   color: var(--fg-muted);
-  line-height: 1.7;
+  font-size: 14px;
+  line-height: 22px;
 }
 
 .shell__meta {
   color: var(--fg-faint);
   font-family: var(--mono);
   font-size: 12px;
+  line-height: 18px;
 }
 
 .shell__log {
@@ -849,11 +1433,12 @@ select:focus {
   overflow: auto;
   margin: 0;
   padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
   background: var(--bg-sunken);
   font-family: var(--mono);
   font-size: 12px;
+  line-height: 18px;
   text-align: left;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -870,5 +1455,6 @@ select:focus {
 .shell__hint {
   margin: 0;
   color: var(--fg-faint);
-  line-height: 1.7;
+  font-size: 12px;
+  line-height: 18px;
 }

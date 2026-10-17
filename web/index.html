@@ -10,10 +10,11 @@
     <!--
       The tab strip — dshell's title bar.
 
-      It is on screen in every state, including while a panel is open: the window
-      is frameless, so the drag region here is the only way to move it, and these
-      are the only window buttons. Panels therefore live in a separate webview
-      *below* this one instead of covering it.
+      It is on screen in every state, including while a dshell page (wizard, new
+      connection, settings) is showing: the window is frameless, so the drag
+      region here is the only way to move it, and these are the only window
+      buttons. Those pages are tabs, so they occupy the content area below and
+      never threaten this region.
 
       `data-tauri-drag-region` values (see tauri's `window/scripts/drag.js`):
 
