@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::{
-    webview::{PageLoadEvent, WebviewBuilder},
+    webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder},
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Webview, WebviewUrl, Window,
 };
 use tokio::sync::Mutex;
@@ -321,6 +321,21 @@ impl TabManager {
                     .data_directory(data_dir.clone())
                     .disable_drag_drop_handler()
                     .focused(false)
+                    // DSH preopens `about:blank` from the sign-in click and
+                    // navigates it to the authorization page once the Host
+                    // answers. Letting WebView2 create that popup is what
+                    // keeps browser sign-in automatic; any other new window
+                    // is a real external link and belongs to the system
+                    // browser.
+                    .on_new_window(|url, _features| {
+                        if url.as_str() == "about:blank" {
+                            return NewWindowResponse::Allow;
+                        }
+                        if matches!(url.scheme(), "http" | "https") {
+                            let _ = crate::shell_open(url.as_str());
+                        }
+                        NewWindowResponse::Deny
+                    })
                     .on_document_title_changed(move |webview, title| {
                         // DSH is an SPA: this callback is the only reliable way
                         // to learn the current session title. The page URL is
