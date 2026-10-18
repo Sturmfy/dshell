@@ -45,10 +45,12 @@ export function isAbsolute(path: string): boolean {
 }
 
 export function isLoopback(url: string): boolean {
-  const match = /^https?:\/\/([^/:]+)/i.exec(url);
+  // Capture a bracketed IPv6 literal as one unit; `[^/:]+` stops at the first
+  // colon inside `[::1]`, which used to classify an IPv6 loopback as remote.
+  const match = /^https?:\/\/(\[[^\]]+\]|[^/:]+)/i.exec(url);
   if (!match) return false;
-  const host = match[1].toLowerCase();
-  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+  const host = match[1].toLowerCase().replace(/^\[|\]$/g, '');
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
 }
 
 /**
@@ -157,13 +159,24 @@ export function pageHeader(title: string, sub?: string): HTMLElement {
  *
  * The title is optional: a group whose heading would only restate the page title
  * gets no heading rather than an extra level of nesting.
+ *
+ * `action` is a control that belongs to the heading — a small "重新检测" or
+ * "重新扫描" next to the group it refreshes, rather than in the page footer
+ * where it would compete with the primary action.
  */
-export function section(title?: string, desc?: string): { root: HTMLElement; body: HTMLElement } {
+export function section(
+  title?: string,
+  desc?: string,
+  action?: HTMLElement | null,
+): { root: HTMLElement; body: HTMLElement } {
   const body = h('div', { class: 'section__body' });
   const root = h('section', { class: 'section' });
-  if (title || desc) {
+  if (title || desc || action) {
     const head = h('div', { class: 'section__head' });
-    if (title) head.appendChild(h('h2', { class: 'section__title', text: title }));
+    const top = h('div', { class: 'section__head-top' });
+    if (title) top.appendChild(h('h2', { class: 'section__title', text: title }));
+    if (action) top.appendChild(action);
+    if (title || action) head.appendChild(top);
     if (desc) head.appendChild(h('p', { class: 'section__desc', text: desc }));
     root.appendChild(head);
   }
@@ -223,6 +236,11 @@ export function selectableCard(options: {
       .filter(Boolean)
       .join(' '),
     title: options.reason ?? '',
+    'aria-pressed': options.selected ? 'true' : undefined,
+    // A blocked runtime is not a choice: the real `disabled` attribute keeps
+    // the card out of the tab order and off the click path, rather than only
+    // painting it dim.
+    disabled: options.disabled ? 'disabled' : undefined,
     onclick: options.onSelect,
   });
   if (options.icon) root.appendChild(h('span', { class: 'card__icon', text: options.icon }));

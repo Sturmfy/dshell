@@ -304,13 +304,20 @@ impl TabManager {
         let app_for_title = self.app.clone();
         let app_for_load = self.app.clone();
 
+        // The loading page has to know which tab it belongs to: it reports that
+        // tab's phase and log path, and refuses to render its loading hint at all
+        // without an id. Creating the webview on the bare document therefore
+        // showed "缺少选项卡标识" for the whole (possibly minutes-long) start-up,
+        // which is exactly what a restored local tab used to display.
+        let placeholder = placeholder_path(&id);
+
         // Webview creation hops to the event loop and blocks until it lands;
         // running it from the async runtime (never the main thread) is what keeps
         // this from deadlocking.
         let webview = self
             .window
             .add_child(
-                WebviewBuilder::new(label.clone(), WebviewUrl::App(CHROME_PLACEHOLDER.into()))
+                WebviewBuilder::new(label.clone(), WebviewUrl::App(placeholder.into()))
                     .data_directory(data_dir.clone())
                     .disable_drag_drop_handler()
                     .focused(false)
@@ -968,7 +975,7 @@ impl TabManager {
 
     pub async fn show_placeholder(&self, id: &str) {
         let Some(webview) = self.webview_of(id).await else { return };
-        let url = asset_url(&self.app, CHROME_PLACEHOLDER, &[("tab", id.to_string())]);
+        let url = asset_url(&self.app, &placeholder_path(id), &[]);
         let _ = webview.navigate(url);
     }
 
@@ -1524,6 +1531,17 @@ fn instance_identity(spec: &TabSpec, app: &AppHandle) -> (String, PathBuf) {
     (key, dir)
 }
 
+/// The app-relative document a content webview starts on, carrying the tab id.
+///
+/// A *new* webview takes a `WebviewUrl::App` path (Tauri joins it onto the app
+/// origin), while [`TabManager::show_placeholder`] navigates to the same address
+/// through [`asset_url`]. Both go through this function, because the page treats
+/// a missing id as "this document was opened by mistake" and refuses to show the
+/// start-up hint at all — which is what a restored local tab used to display.
+fn placeholder_path(id: &str) -> String {
+    format!("{CHROME_PLACEHOLDER}?tab={}", urlencode(id))
+}
+
 fn asset_url(app: &AppHandle, relative: &str, query: &[(&str, String)]) -> tauri::Url {
     // On Windows the app origin is `http://tauri.localhost` (never https: that
     // would forbid mixed content to `http://127.0.0.1`, and flipping it later
@@ -1559,4 +1577,37 @@ fn urlencode(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The start-up document must carry the tab id. Without it the loading page
+    /// renders "缺少选项卡标识" for as long as the backend takes to start — the
+    /// bug a restored local tab used to show instead of "正在启动 DSH…".
+    #[test]
+    fn placeholder_path_identifies_the_tab() {
+        assert_eq!(placeholder_path("abc123"), "shell/placeholder.html?tab=abc123");
+
+        let url = tauri::Url::parse("http://tauri.localhost/")
+            .unwrap()
+            .join(&placeholder_path("abc123"))
+            .unwrap();
+        assert_eq!(url.path(), "/shell/placeholder.html");
+        assert_eq!(
+            url.query_pairs().find(|(key, _)| key == "tab").map(|(_, value)| value.into_owned()),
+            Some("abc123".to_string())
+        );
+    }
+
+    /// The id is percent-encoded on both paths, so a hand-written or otherwise
+    /// unusual id cannot truncate the query or smuggle a second parameter in.
+    #[test]
+    fn placeholder_path_encodes_unusual_ids() {
+        assert_eq!(
+            placeholder_path("a b&c=d"),
+            "shell/placeholder.html?tab=a%20b%26c%3Dd"
+        );
+    }
 }

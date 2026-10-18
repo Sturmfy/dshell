@@ -257,6 +257,30 @@ async function renderError() {
     : 'DSH 自己写的启动诊断日志位于 <DSH_HOME>/logs/startup-*.log';
 }
 
+/** What the loading page says under its headline for this tab.
+ *
+ * The document ships a generic line, so the first paint never claims a download
+ * that is not happening. This refines it from the tab's own view: "npx" is the
+ * only runtime that may pull ~450 MB on first use, a source checkout instead
+ * wastes its time on `pnpm`/build steps, and an attach/remote tab is connecting
+ * to an instance dshell did not start.
+ */
+function startupSubtitle(view: TabView | null): string {
+  if (!view) return '请稍候…';
+  if (view.badge !== 'local') {
+    return '正在连接这个实例，就绪后会自动切换到这个选项卡。';
+  }
+  switch (view.runtime) {
+    case 'npx':
+      return 'npx 正在启动后端；首次使用需要下载依赖（约 450 MB），请耐心等待。';
+    case 'source':
+    case 'managed/source':
+      return '源码版正在启动后端，就绪后会自动切换到这个选项卡。';
+    default:
+      return 'dshell 已在后台启动后端，就绪后会自动切换到这个选项卡。';
+  }
+}
+
 /** The loading page keeps refreshing its log tail until the tab leaves the
  *  starting phases, then hands over to the real DSH page. */
 async function renderPlaceholder() {
@@ -264,9 +288,6 @@ async function renderPlaceholder() {
   let stopped = false;
   const tick = window.setInterval(() => {
     elapsed += 1;
-    if (elapsed === 20) {
-      subEl.textContent = '首次运行需要下载依赖，请耐心等待…';
-    }
     if (metaEl) metaEl.textContent = `已等待 ${elapsed}s`;
   }, 1000);
 
@@ -287,6 +308,8 @@ async function renderPlaceholder() {
         stopped = true;
         return;
       }
+      const subtitle = startupSubtitle(view);
+      if (subtitle !== subEl.textContent) subEl.textContent = subtitle;
       if (view.notice) {
         if (metaEl) metaEl.textContent = `${view.notice}（已等待 ${elapsed}s）`;
       }

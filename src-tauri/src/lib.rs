@@ -88,6 +88,7 @@ pub fn main() {
             commands::local_runtime_status,
             commands::prepare_runtime,
             commands::scan_instances,
+            commands::probe_connection,
             commands::forget_connection,
             commands::set_extra_binary,
             commands::managed_install_add,

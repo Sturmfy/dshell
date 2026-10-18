@@ -3,7 +3,10 @@
 //! The supervisor only ever asks two questions:
 //!
 //! * "is this really a DSH web server?" — an unauthenticated `GET /` must answer
-//!   **401**, which is a *positive* signal (it is DSH, and it wants a token).
+//!   DSH's own **401 page**, identified by its exact opening words plus the
+//!   headers that come with it. The status code alone proves nothing: every
+//!   authenticated service on a machine answers 401, and the local-instance scan
+//!   did once list this machine's Clash controller as "a dsh that wants a token".
 //! * "does this instance actually serve the frontend?" — the token URL must
 //!   answer **200** with the boot marker. DSH prints its readiness line even
 //!   when the frontend bundle is missing, in which case the page is a 404 and
@@ -20,9 +23,20 @@ use crate::error::{Action, Failure, FailureCode};
 /// Marker that only the real DSH frontend emits.
 const BOOT_MARKER: &[u8] = b"__DSH_BOOT__";
 
+/// Opening words of the page DSH serves to an unauthenticated request.
+///
+/// This is the only positive identity a credential-free probe can obtain. It is
+/// a contract with the server, not a guess: `writeUnauthorized` in
+/// `packages/client/connection/src/browser-auth.ts` emits exactly this sentence,
+/// as `text/plain; charset=utf-8`, with `cache-control: no-store`.
+const DSH_AUTH_REQUIRED: &str = "dsh web authentication required";
+
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
     pub status: u16,
+    /// Lower-cased header names in arrival order. Duplicates are kept, because
+    /// several `Set-Cookie` lines are normal and none of them may be dropped.
+    pub headers: Vec<(String, String)>,
     pub location: Option<String>,
     /// The `name=value` pairs from `Set-Cookie`, without attributes.
     ///
@@ -36,6 +50,13 @@ pub struct HttpResponse {
 impl HttpResponse {
     pub fn body_text(&self) -> String {
         String::from_utf8_lossy(&self.body).chars().take(4000).collect()
+    }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
     }
 }
 
@@ -148,10 +169,16 @@ fn frontend_missing(origin: &str, response: &HttpResponse) -> Failure {
 /// Identify a server by port alone: is it a DSH that wants a token?
 ///
 /// This is the local-instance scan's only question, and it is asked without a
-/// token — which is the point. DSH answers an unauthenticated `GET /` with
-/// **401**, and a 403 means a DSH whose trust fence does not accept the
-/// `Host` we used. Anything else (200, 404, nothing at all) is some other
-/// program, and must not be offered to the user as "一个正在运行的 dsh".
+/// token — which is the point, and also the difficulty: the answer may not rest
+/// on the status code. 401 is the most common answer in HTTP; on the machine
+/// this rule was written for, a Clash controller and a DSH both said 401, and
+/// only one of them was DSH. A genuine DSH answers with its own page, so three
+/// independent facts have to agree before a port may be called an instance:
+/// the status, the exact opening words, and the headers DSH sets beside them.
+///
+/// 403 is deliberately *not* accepted. DSH's trust fence answers a bare
+/// `forbidden`, which is indistinguishable from any other program's 403; a real
+/// DSH answers 401 — with the same page — even when the `Host` is untrusted.
 ///
 /// Returns the status code that identified it.
 pub async fn probe_dsh_server(origin: &str, timeout: Duration) -> Option<u16> {
@@ -160,7 +187,26 @@ pub async fn probe_dsh_server(origin: &str, timeout: Duration) -> Option<u16> {
         return None;
     }
     let response = get(&parsed.origin, "/", timeout, false).await.ok()?;
-    matches!(response.status, 401 | 403).then_some(response.status)
+    is_dsh_auth_required(&response).then_some(response.status)
+}
+
+/// Does this response carry DSH's unauthenticated page?
+///
+/// All three checks are required, and each rejects a different impostor: the
+/// body rejects every other authenticated service, the content type rejects a
+/// JSON API that happens to echo the sentence, and `no-store` rejects a cached
+/// answer that a previous occupant of the port left behind.
+fn is_dsh_auth_required(response: &HttpResponse) -> bool {
+    if response.status != 401 {
+        return false;
+    }
+    let text_plain = response
+        .header("content-type")
+        .is_some_and(|value| value.trim().to_ascii_lowercase().starts_with("text/plain"));
+    let no_store = response
+        .header("cache-control")
+        .is_some_and(|value| value.to_ascii_lowercase().contains("no-store"));
+    text_plain && no_store && response.body_text().starts_with(DSH_AUTH_REQUIRED)
 }
 
 /// Probe an instance dshell did not start.
@@ -189,7 +235,19 @@ pub async fn probe_remote(url: &str, timeout: Duration) -> Result<ProbeOutcome, 
         .map_err(|err| classify_transport(&parsed.origin, &err))?;
 
     match response.status {
-        401 => Ok(ProbeOutcome::Ready),
+        // Same rule as the scan: attaching to a port that merely answers 401
+        // would hand the user a webview stuck on another program's login page.
+        401 if is_dsh_auth_required(&response) => Ok(ProbeOutcome::Ready),
+        401 => Err(Failure::new(
+            FailureCode::AttachNotDsh,
+            format!("{} 返回了 401，但不是 DSH 的鉴权页", parsed.origin),
+        )
+        .with_detail(
+            "该端口上可能是另一个需要鉴权的服务（例如代理或管理面板），\
+             它同样会对未授权请求回 401。请在运行 dsh web 的终端里核对实际端口。"
+                .to_string(),
+        )
+        .with_detail(truncate(&response.body_text(), 300))),
         403 => Err(remote_forbidden(&parsed)),
         200 => Err(Failure::new(
             FailureCode::AttachNotDsh,
@@ -283,9 +341,15 @@ async fn get_inner(
 
     let target = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
 
-    // `parsed.host` is the bare host and `parsed.port` the port, so the authority
-    // is assembled exactly once here.
-    let host_header = format!("{}:{}", parsed.host, parsed.port);
+    // `parsed.host` is the bare host (IPv6 literals lose their brackets in
+    // `LaunchUrl::parse`) and `parsed.port` the port, so the authority is
+    // assembled exactly once here — bracketing a v6 literal again, because a
+    // bare `::1:9808` is not a valid authority.
+    let host_header = if parsed.host.contains(':') {
+        format!("[{}]:{}", parsed.host, parsed.port)
+    } else {
+        format!("{}:{}", parsed.host, parsed.port)
+    };
     let mut request = format!(
         "GET {target} HTTP/1.1\r\nHost: {host_header}\r\nAccept: text/html,*/*\r\n"
     );
@@ -360,6 +424,7 @@ fn parse_response(raw: &[u8]) -> std::io::Result<HttpResponse> {
         .and_then(|code| code.parse::<u16>().ok())
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "no status code"))?;
 
+    let mut headers: Vec<(String, String)> = Vec::new();
     let mut location = None;
     let mut cookies = Vec::new();
     let mut chunked = false;
@@ -383,11 +448,12 @@ fn parse_response(raw: &[u8]) -> std::io::Result<HttpResponse> {
         if name == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked") {
             chunked = true;
         }
+        headers.push((name, value.to_string()));
     }
 
     let body = &raw[split.1..];
     let body = if chunked { dechunk(body) } else { body.to_vec() };
-    Ok(HttpResponse { status, location, cookies, body })
+    Ok(HttpResponse { status, headers, location, cookies, body })
 }
 
 fn dechunk(body: &[u8]) -> Vec<u8> {
@@ -465,6 +531,66 @@ mod tests {
     fn boot_marker_detection_is_exact() {
         assert!(contains_marker(b"<script>window.__DSH_BOOT__={}</script>"));
         assert!(!contains_marker(b"<html></html>"));
+    }
+
+    /// The real DSH page, byte for byte as `browser-auth.ts` writes it.
+    #[test]
+    fn identifies_dsh_by_its_unauthenticated_page() {
+        let raw = b"HTTP/1.1 401 Unauthorized\r\n\
+                    content-type: text/plain; charset=utf-8\r\n\
+                    cache-control: no-store\r\n\
+                    \r\n\
+                    dsh web authentication required; reopen the URL printed by dsh web.\n";
+        let response = parse_response(raw).unwrap();
+        assert!(is_dsh_auth_required(&response));
+        assert_eq!(response.status, 401);
+    }
+
+    /// Regression: the Clash controller on this machine answers
+    /// `401 application/json {"message":"Unauthorized"}`. The scan offered it to
+    /// the user as "a dsh that wants the token it printed at startup".
+    #[test]
+    fn rejects_a_json_401_from_another_service() {
+        let raw = b"HTTP/1.1 401 Unauthorized\r\n\
+                    content-type: application/json\r\n\
+                    \r\n\
+                    {\"message\":\"Unauthorized\"}\n";
+        let response = parse_response(raw).unwrap();
+        assert!(!is_dsh_auth_required(&response));
+    }
+
+    /// A bare 403 is what DSH's trust fence writes, and also what a dozen other
+    /// programs write. It is not evidence, so it is not accepted.
+    #[test]
+    fn rejects_bare_403() {
+        let raw = b"HTTP/1.1 403 Forbidden\r\n\r\nforbidden";
+        let response = parse_response(raw).unwrap();
+        assert!(!is_dsh_auth_required(&response));
+    }
+
+    /// Each of the three facts has to hold on its own: a page that copies the
+    /// sentence but is served as JSON, or without `no-store`, is not DSH.
+    #[test]
+    fn every_part_of_the_signature_is_required() {
+        let no_cache_control = b"HTTP/1.1 401 Unauthorized\r\n\
+                                 content-type: text/plain; charset=utf-8\r\n\
+                                 \r\n\
+                                 dsh web authentication required; reopen the URL printed by dsh web.\n";
+        assert!(!is_dsh_auth_required(&parse_response(no_cache_control).unwrap()));
+
+        let wrong_type = b"HTTP/1.1 401 Unauthorized\r\n\
+                           content-type: text/html; charset=utf-8\r\n\
+                           cache-control: no-store\r\n\
+                           \r\n\
+                           dsh web authentication required; reopen the URL printed by dsh web.\n";
+        assert!(!is_dsh_auth_required(&parse_response(wrong_type).unwrap()));
+
+        let truncated = b"HTTP/1.1 401 Unauthorized\r\n\
+                          content-type: text/plain; charset=utf-8\r\n\
+                          cache-control: no-store\r\n\
+                          \r\n\
+                          unauthorized\n";
+        assert!(!is_dsh_auth_required(&parse_response(truncated).unwrap()));
     }
 
     #[test]

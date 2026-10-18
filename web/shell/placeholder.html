@@ -14,8 +14,14 @@
     <main class="shell" id="shell" data-mode="placeholder">
       <div class="shell__spinner" aria-hidden="true"></div>
       <h1 class="shell__title" id="shell-title">正在启动 DSH…</h1>
+      <!--
+        The generic line, so the very first paint is never wrong. The script
+        replaces it with the one that matches this tab's runtime as soon as the
+        tab's view is available; a source checkout must not be told it is
+        downloading an npx package.
+      -->
       <p class="shell__subtitle" id="shell-subtitle">
-        首次使用 npx 需要下载依赖（约 450 MB），请耐心等待。
+        dshell 已在后台启动后端，就绪后会自动切换到这个选项卡。
       </p>
       <div class="shell__meta" id="shell-meta"></div>
       <pre class="shell__log" id="shell-log" hidden></pre>

@@ -126,6 +126,8 @@ export interface Config {
   sourceContainer?: string | null;
   /** Remembered attach/remote targets, newest first. */
   recentConnections?: RecentConnection[];
+  /** Origins pinned above the ordinary remote lists, newest pin first. */
+  pinnedConnections?: string[];
   language: string;
   backgroundMode: string;
   fixedPort: boolean;
@@ -146,6 +148,15 @@ export interface RecentConnection {
   label: string;
   remote: boolean;
   lastUsedAt: number;
+}
+
+/** What `probe_connection` says before a tab is opened. */
+export interface ConnectionProbe {
+  /** The token (when supplied) reached DSH's frontend. */
+  ok: boolean;
+  /** The server answered like DSH, but no token was supplied yet. */
+  requiresToken: boolean;
+  origin: string;
 }
 
 export interface RootView {

@@ -42,9 +42,17 @@ impl LaunchUrl {
         if host.is_empty() {
             return None;
         }
+        // An IPv6 literal loses its brackets when split, but the origin it is
+        // rebuilt into needs them back: `http://::1:9808` is not an authority,
+        // and a scan that binds `[::1]` only has to hand that spelling on.
+        let authority_host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.clone()
+        };
         Some(Self {
             url: raw.to_string(),
-            origin: format!("{scheme}://{host}:{port}"),
+            origin: format!("{scheme}://{authority_host}:{port}"),
             scheme: scheme.to_string(),
             host,
             port,
@@ -217,6 +225,18 @@ mod tests {
         let url = LaunchUrl::parse("https://app.example.com/?token=t").unwrap();
         assert_eq!(url.port, 443);
         assert_eq!(url.origin, "https://app.example.com:443");
+    }
+
+    /// A listener bound to `::1` only is reachable at `[::1]` and nowhere else.
+    /// The origin has to keep the brackets the browser needs, while `host` stays
+    /// bare so `TcpStream::connect` can resolve it.
+    #[test]
+    fn keeps_brackets_in_an_ipv6_origin() {
+        let url = LaunchUrl::parse("http://[::1]:9808/?token=t").unwrap();
+        assert_eq!(url.origin, "http://[::1]:9808");
+        assert_eq!(url.host, "::1");
+        assert_eq!(url.port, 9808);
+        assert!(url.is_loopback());
     }
 
     #[test]

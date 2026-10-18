@@ -10,6 +10,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import type {
   AppInfo,
   Config,
+  ConnectionProbe,
   EnvironmentSnapshot,
   LocalRuntimeState,
   LogEntry,
@@ -125,6 +126,15 @@ export const api = {
     }),
   /** Rescan this machine for DSH servers (newest picture of the same list). */
   scanInstances: () => invoke<RunningInstance[]>('scan_instances'),
+  /**
+   * Check a target before opening a tab.
+   *
+   * Without `url` this only identifies DSH and answers `requiresToken`; with a
+   * token URL it performs the same exchange the webview will perform, so a
+   * stale remembered token fails here rather than in a stuck tab.
+   */
+  probeConnection: (origin: string, url?: string | null) =>
+    invoke<ConnectionProbe>('probe_connection', { origin, url: url ?? null }),
   /** Drop one remembered connection. */
   forgetConnection: (id: string) => invoke<void>('forget_connection', { id }),
   /**

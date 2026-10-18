@@ -339,6 +339,11 @@ pub enum NewTabRequest {
         remote: bool,
         #[serde(rename = "allowPlaintext", default)]
         allow_plaintext: bool,
+        /// The name the user gave this connection in the confirmation step.
+        /// It becomes the tab title and the history label; `None` keeps the
+        /// old host/port-derived title.
+        #[serde(default)]
+        label: Option<String>,
     },
 }
 
@@ -463,7 +468,7 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
 
             Ok(NewTabResult { id, instance_key })
         }
-        NewTabRequest::Attach { url, remote, allow_plaintext } => {
+        NewTabRequest::Attach { url, remote, allow_plaintext, label } => {
             let parsed = crate::dsh::url::LaunchUrl::parse(&url).ok_or_else(|| {
                 Failure::new(FailureCode::AttachNotDsh, "无法解析该地址")
                     .with_detail("需要 `http://host:port/?token=…` 形式。")
@@ -496,11 +501,22 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
                 .with_action(Action::primary("confirm-plaintext", "我已了解风险，继续")));
             }
 
-            let title = if is_remote {
-                format!("远程 · {}", parsed.host)
-            } else {
-                format!("本地 · {}", parsed.port)
-            };
+            // A user-chosen name is the tab title *and* the history label. It is
+            // trimmed and bounded here because it crosses the UI boundary; an
+            // empty name falls back to the old host/port description rather
+            // than producing a nameless tab.
+            let named = label
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.chars().take(48).collect::<String>());
+            let title = named.clone().unwrap_or_else(|| {
+                if is_remote {
+                    format!("远程 · {}", parsed.host)
+                } else {
+                    format!("本地 · {}", parsed.port)
+                }
+            });
             let connection = if is_remote {
                 ConnectionKind::Remote { url: url.clone(), allow_plaintext }
             } else {
@@ -518,13 +534,14 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
             // remember step is what makes a retry possible from the history list,
             // and a failed probe leaves exactly that situation.
             let origin = parsed.origin.clone();
-            let label = format!("{} · {}", parsed.host, parsed.port);
+            let history_label =
+                named.unwrap_or_else(|| format!("{} · {}", parsed.host, parsed.port));
             state
                 .update_config(|config| {
                     config.remember_connection(crate::config::RecentConnection::new(
                         &url,
                         &origin,
-                        &label,
+                        &history_label,
                         is_remote,
                     ));
                 })
@@ -544,6 +561,87 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
             Ok(NewTabResult { id, instance_key })
         }
     }
+}
+
+/// The answer to "can this exact target be connected to?" before a tab exists.
+///
+/// `requiresToken` is not a failure: the server at the typed IP/port answered
+/// like DSH, and the confirmation dialog can ask for the launch token without
+/// throwing the whole flow away. A real failure (timeout, wrong service,
+/// rejected token) is returned as `Err(Failure)` so the page can show Rust's
+/// own diagnostic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionProbe {
+    pub ok: bool,
+    pub requires_token: bool,
+    pub origin: String,
+}
+
+const CONNECTION_PROBE_TIMEOUT: Duration = Duration::from_millis(2500);
+
+/// Probe an origin with or without a token before opening a tab.
+///
+/// With a token this runs the same exchange the webview will run: a valid token
+/// must reach DSH's frontend, so a stale history entry is caught here instead of
+/// producing a tab stuck on `401`. Without one it only identifies the server,
+/// which is enough to know that asking for a token makes sense.
+#[tauri::command]
+pub async fn probe_connection(
+    origin: String,
+    url: Option<String>,
+) -> Result<ConnectionProbe, Failure> {
+    let target = crate::dsh::url::LaunchUrl::parse(&origin).ok_or_else(|| {
+        Failure::new(FailureCode::AttachNotDsh, "无法解析该地址")
+            .with_detail("需要 `http://host:port` 形式。")
+    })?;
+
+    let Some(url) = url.map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
+    else {
+        if crate::dsh::probe::probe_dsh_server(&target.origin, CONNECTION_PROBE_TIMEOUT)
+            .await
+            .is_some()
+        {
+            return Ok(ConnectionProbe {
+                ok: false,
+                requires_token: true,
+                origin: target.origin,
+            });
+        }
+        return Err(Failure::new(
+            FailureCode::RemoteUnreachable,
+            format!("未检测到 DSH 服务：{}", target.origin),
+        )
+        .with_detail("请确认 IP 与端口正确，且服务端允许该地址访问。"));
+    };
+
+    let parsed = crate::dsh::url::LaunchUrl::parse(&url).ok_or_else(|| {
+        Failure::new(FailureCode::AttachAuthRequired, "启动 URL 无法解析")
+            .with_detail("请粘贴 `dsh web` 打印的完整 URL，或只粘贴 token。")
+    })?;
+    if !parsed.has_token() {
+        return Err(Failure::new(
+            FailureCode::AttachAuthRequired,
+            "启动 URL 里没有 token",
+        )
+        .with_detail("请在运行 `dsh web` 的终端里复制整行输出，或单独粘贴 token。"));
+    }
+
+    // Identify the service before exchanging a token: a random HTTP server can
+    // answer 200 with a page that is not DSH, and `verify_ready`'s
+    // "frontend missing" would then blame a DSH install that does not exist.
+    let identified =
+        crate::dsh::probe::probe_dsh_server(&parsed.origin, CONNECTION_PROBE_TIMEOUT).await;
+    if identified.is_none() {
+        return Err(Failure::new(
+            FailureCode::AttachNotDsh,
+            format!("{} 不是可识别的 DSH 服务", parsed.origin),
+        )
+        .with_detail("请确认 IP、端口正确，且服务端允许该地址访问。"));
+    }
+
+    crate::dsh::probe::verify_ready(&parsed.origin, &url, CONNECTION_PROBE_TIMEOUT).await?;
+    Ok(ConnectionProbe { ok: true, requires_token: false, origin: parsed.origin })
 }
 
 /// Map a runtime id from the UI onto a concrete spec.
@@ -1656,14 +1754,16 @@ mod tests {
             "kind": "attach",
             "url": "http://127.0.0.1:3080/?token=x",
             "remote": false,
-            "allowPlaintext": false
+            "allowPlaintext": false,
+            "label": "我的连接"
         }"#;
         let parsed: NewTabRequest = serde_json::from_str(json).expect("attach payload must parse");
         match parsed {
-            NewTabRequest::Attach { url, remote, allow_plaintext } => {
+            NewTabRequest::Attach { url, remote, allow_plaintext, label } => {
                 assert_eq!(url, "http://127.0.0.1:3080/?token=x");
                 assert!(!remote);
                 assert!(!allow_plaintext);
+                assert_eq!(label.as_deref(), Some("我的连接"));
             }
             other => panic!("expected an attach request, got {other:?}"),
         }

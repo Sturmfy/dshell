@@ -2,9 +2,11 @@
 //!
 //! A `dsh web` the user started in their own terminal is invisible to dshell:
 //! dshell never spawned it, so it holds no token and no process handle. What it
-//! *can* see is the port table, and DSH is easy to recognise from outside — an
-//! unauthenticated `GET /` answers **401** ("I am DSH, and I want a token"),
-//! which is a far more specific signal than any banner.
+//! *can* see is the port table, and a DSH answers an unauthenticated `GET /` with
+//! its own 401 page. That page — not the status code — is the identity: 401 is
+//! the most common answer in HTTP, and this scan once offered a Clash controller
+//! to the user as "a dsh that wants the token it printed at startup". See
+//! `probe::probe_dsh_server` for what the page has to say to count.
 //!
 //! Only loopback listeners are candidates. DSH refuses to bind a wildcard
 //! address at all (`webserver` throws on `0.0.0.0`), so a wildcard entry belongs
@@ -56,6 +58,11 @@ pub struct Listener {
     pub port: u16,
     /// `127.0.0.1`, `::1`, … as netstat spelled it.
     pub bind: String,
+    /// The process that owns the socket, when netstat printed it. Nothing reads
+    /// it yet: the identity document that would make it decisive
+    /// (`instance.pid == socket owner`) is not served by DSH. Capturing it here
+    /// costs one field and saves a second `netstat` pass when it is.
+    pub pid: Option<u32>,
 }
 
 /// Loopback listeners currently in `LISTENING` state.
@@ -119,6 +126,9 @@ fn parse_netstat_line(line: &str) -> Option<Listener> {
     if !state.eq_ignore_ascii_case("LISTENING") {
         return None;
     }
+    // `-o` puts the owning pid last. Its absence is not fatal — the bind address
+    // and the port are what the probe needs — but it is worth keeping.
+    let pid = fields.next().and_then(|value| value.parse::<u32>().ok());
     let (host, port) = split_endpoint(local)?;
     let loopback = matches!(
         host.trim_matches(['[', ']']).to_ascii_lowercase().as_str(),
@@ -127,7 +137,22 @@ fn parse_netstat_line(line: &str) -> Option<Listener> {
     if !loopback {
         return None;
     }
-    Some(Listener { port, bind: host })
+    Some(Listener { port, bind: host, pid })
+}
+
+/// The origin to probe, and the one to show the user.
+///
+/// It has to be the address the listener actually bound. Hard-coding
+/// `127.0.0.1` looked harmless until `dsh web --host ::1` bound only `[::1]`:
+/// the port was in the table, the probe went to an address nobody was listening
+/// on, and a running instance was invisible.
+fn origin_for(listener: &Listener) -> String {
+    let host = listener.bind.trim_matches(['[', ']']);
+    if host.contains(':') {
+        format!("http://[{}]:{}", host, listener.port)
+    } else {
+        format!("http://{}:{}", host, listener.port)
+    }
 }
 
 fn split_endpoint(endpoint: &str) -> Option<(String, u16)> {
@@ -147,19 +172,17 @@ pub async fn scan(timeout: Duration) -> Result<Vec<Instance>, Failure> {
         let limit = limit.clone();
         tasks.push(tokio::spawn(async move {
             let _permit = limit.acquire().await.ok()?;
-            let origin = format!("http://127.0.0.1:{}", listener.port);
-            let status = crate::dsh::probe::probe_dsh_server(&origin, timeout).await?;
+            let origin = origin_for(&listener);
+            crate::dsh::probe::probe_dsh_server(&origin, timeout).await?;
             Some(Instance {
                 origin,
                 port: listener.port,
                 tab_id: None,
                 title: None,
                 connectable: false,
-                notice: Some(if status == 401 {
-                    "需要这次启动打印的 token".to_string()
-                } else {
-                    "该端口上的 DSH 不接受 loopback 访问（403）".to_string()
-                }),
+                // The probe only accepts DSH's own 401 page, so there is exactly
+                // one thing left for the user to supply.
+                notice: Some("需要这次启动打印的 token".to_string()),
             })
         }));
     }
@@ -184,6 +207,7 @@ mod tests {
         let listener = parse_netstat_line(loopback).expect("loopback listener");
         assert_eq!(listener.port, 9808);
         assert_eq!(listener.bind, "127.0.0.1");
+        assert_eq!(listener.pid, Some(4242));
 
         let v6 = "  TCP    [::1]:3080             [::]:0                 LISTENING       4242";
         assert_eq!(parse_netstat_line(v6).map(|l| l.port), Some(3080));
@@ -201,6 +225,21 @@ mod tests {
         // The IPv6 header and the UDP table are skipped without a fuss.
         assert!(parse_netstat_line("活动连接").is_none());
         assert!(parse_netstat_line("  UDP    0.0.0.0:5353           *:*                                    4").is_none());
+    }
+
+    /// Regression: the origin used to be hard-coded to `127.0.0.1`, so a
+    /// `--host ::1` instance was probed at an address it never bound.
+    #[test]
+    fn probes_the_address_the_listener_bound() {
+        let v4 = Listener { port: 9808, bind: "127.0.0.1".into(), pid: Some(1) };
+        assert_eq!(origin_for(&v4), "http://127.0.0.1:9808");
+
+        let v6 = Listener { port: 9808, bind: "[::1]".into(), pid: Some(1) };
+        assert_eq!(origin_for(&v6), "http://[::1]:9808");
+
+        // netstat has been seen to print the expanded spelling too.
+        let expanded = Listener { port: 3080, bind: "0:0:0:0:0:0:0:1".into(), pid: None };
+        assert_eq!(origin_for(&expanded), "http://[0:0:0:0:0:0:0:1]:3080");
     }
 
     #[test]

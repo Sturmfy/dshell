@@ -658,6 +658,432 @@ textarea {
   color: var(--fg-muted);
 }
 
+/* The new-connection flow is a focused, two-step wizard. A slightly narrower
+   column than the other pages keeps the pair of choices and the connection
+   lists from sprawling on a wide monitor. */
+.page-body--new .page__scroll,
+.page-body--new .page__foot {
+  padding-left: max(24px, calc((100% - 820px) / 2));
+  padding-right: max(24px, calc((100% - 820px) / 2));
+}
+
+.page-body--new .page__title {
+  font-size: 20px;
+  line-height: 28px;
+}
+
+/* The rail, the quiet secondary action and the title are one block: they are
+   the page's fixed shape across both steps. */
+.page__intro {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.page__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.page__top-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+/*
+ * Step one is a choice screen, not a form. The scroll column becomes a flex
+ * column so the cards can take the height left under the rail and centre in
+ * it; auto margins mean they fall back to the top (and scroll) when the window
+ * is too short, instead of clipping their upper edge.
+ */
+.page--kind .page__scroll {
+  display: flex;
+  flex-direction: column;
+}
+
+.page--kind .page__stack {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.kind-center {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  padding: 12px 0;
+}
+
+.kind-cards {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 28px;
+  width: 100%;
+  margin: auto;
+}
+
+/* Portrait, logo-first cards: height is deliberately greater than width. */
+.kind-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: min(320px, 40vw);
+  min-height: 340px;
+  aspect-ratio: 4 / 5;
+  padding: 36px 26px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-xl);
+  background: var(--bg-elevated);
+  text-align: center;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+
+.kind-card:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  transform: translateY(-2px);
+}
+
+.kind-card--selected,
+.kind-card--selected:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.kind-card:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.kind-card__logo {
+  display: grid;
+  place-items: center;
+  width: 104px;
+  height: 104px;
+  border: 0.5px solid var(--border);
+  border-radius: 32px;
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+}
+
+.kind-card__logo svg {
+  width: 48px;
+  height: 48px;
+}
+
+.kind-card--selected .kind-card__logo {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.kind-card__title {
+  margin-top: 28px;
+  color: var(--fg);
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.kind-card__desc {
+  margin-top: 8px;
+  max-width: 18ch;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/* ------------------------------------------------------------ remote cards */
+
+/* One sequence, not columns: every card has the same portrait footprint and
+   the row wraps only when the window cannot hold another full card. */
+.remote-cards {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 16px;
+}
+
+.remote-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 0 0 auto;
+  width: min(250px, 100%);
+  height: 320px;
+  padding: 20px 18px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--bg-elevated);
+  text-align: center;
+  min-width: 0;
+}
+
+.remote-card--pinned {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--dsw-alias-border-l4));
+}
+
+.remote-card__pin {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-faint);
+  opacity: 0.7;
+}
+
+.remote-card__pin:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--fg);
+  opacity: 1;
+}
+
+.remote-card__pin svg {
+  width: 14px;
+  height: 14px;
+}
+
+.remote-card__pin--active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  opacity: 1;
+}
+
+.remote-card__eyebrow {
+  margin-top: 12px;
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.05em;
+}
+
+.remote-card__title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  margin-top: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.remote-card__desc {
+  margin-top: 4px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.remote-card__sub {
+  margin-top: 6px;
+  max-width: 100%;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.remote-card__meta {
+  margin-top: 4px;
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.remote-card__fields {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
+  margin-top: 14px;
+  text-align: left;
+}
+
+.remote-field {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.remote-field--port {
+  flex: 0 0 70px;
+}
+
+.remote-field__label {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.remote-field input {
+  width: 100%;
+  height: 30px;
+  font-size: 12px;
+}
+
+.remote-card__actions {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  margin-top: auto;
+  padding-top: 14px;
+}
+
+.remote-card__actions .btn {
+  flex: 1 1 0;
+  height: 32px;
+  padding: 0 8px;
+}
+
+/* The icon-with-status-dot used by every card and by the check dialog. */
+.remote-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border: 0.5px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+}
+
+.remote-icon--lg {
+  width: 72px;
+  height: 72px;
+  border-radius: 24px;
+}
+
+.remote-icon__glyph {
+  display: grid;
+  place-items: center;
+}
+
+.remote-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.remote-icon--lg svg {
+  width: 34px;
+  height: 34px;
+}
+
+.remote-icon__dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--bg-elevated);
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+/* ------------------------------------------------------------ connection check */
+
+.probe-target {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 14px;
+  border-bottom: 0.5px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.probe-target__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.probe-target__label {
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.probe-target__origin {
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.probe-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 0 8px;
+}
+
+.probe-status__text {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.probe-success {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 0 4px;
+  color: var(--ok);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.probe-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.probe-field__label {
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.probe-detail {
+  margin: 8px 0 0;
+  color: var(--fg-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 /* ----------------------------------------------------------------- section */
 
 /*
@@ -680,6 +1106,17 @@ textarea {
   flex-direction: column;
   gap: 2px;
   padding-bottom: 10px;
+}
+
+/* A section heading that carries one small action (重新检测 / 重新扫描). The
+   action stays on the heading's baseline instead of becoming another footer
+   button competing with the primary one. */
+.section__head-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
 }
 
 .section__title {
@@ -998,6 +1435,25 @@ textarea {
   gap: 6px;
 }
 
+/* An empty list still gets a row, so the section does not collapse into a
+   heading with nothing under it — and it gets one useful next step. */
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 0.5px solid var(--border);
+  border-bottom: 0.5px solid var(--border);
+  min-width: 0;
+}
+
+.empty__text {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+
 /* ------------------------------------------------------------------ pieces */
 
 .choices {
@@ -1106,6 +1562,14 @@ input[type='text']::placeholder {
   color: var(--dsw-alias-label-dimmed);
 }
 
+/* The URL is the one field a user reads character by character; it gets a
+   taller box and the mono face. */
+input[type='text'].input--lg {
+  height: 40px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
 input[type='text']:focus,
 select:focus {
   outline: none;
@@ -1171,6 +1635,20 @@ select {
   height: 26px;
   padding: 0 10px;
   font-size: 12px;
+}
+
+/* A text button for a secondary page-level action (高级选项). It should be
+   findable but must not compete with the primary button in the footer. */
+.btn--quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--fg-muted);
+  padding: 0 8px;
+}
+
+.btn--quiet:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--fg);
 }
 
 .actions {
@@ -1300,6 +1778,25 @@ select {
   border-color: transparent;
   background: var(--dsw-alias-interactive-bg-active);
   color: var(--fg-muted);
+}
+
+/* A finished step is also the way back to it. */
+.step--link {
+  cursor: pointer;
+}
+
+.step--link:hover {
+  color: var(--fg);
+}
+
+.step--link:hover .step__num {
+  border-color: var(--fg-muted);
+}
+
+.step--link:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 3px;
+  border-radius: var(--dsw-radius-sm);
 }
 
 .step__sep {

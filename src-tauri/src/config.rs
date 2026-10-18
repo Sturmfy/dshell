@@ -133,6 +133,14 @@ pub struct Config {
     #[serde(default)]
     pub recent_connections: Vec<RecentConnection>,
 
+    /// Origins (`http://host:port`) the user pinned above the ordinary lists.
+    ///
+    /// Stored as the same origin key used by [`RecentConnection::id`] and the
+    /// local scan, so a pin can be matched without persisting a second copy of
+    /// the URL or its token.
+    #[serde(default)]
+    pub pinned_connections: Vec<String>,
+
     /// Preferred UI language: `"system"`, `"zh"` or `"en"`.
     #[serde(default = "default_language")]
     pub language: String,
@@ -260,6 +268,7 @@ impl Default for Config {
             extra_binary: None,
             source_container: None,
             recent_connections: Vec::new(),
+            pinned_connections: Vec::new(),
             language: default_language(),
             background_mode: default_background_mode(),
             fixed_port: false,
