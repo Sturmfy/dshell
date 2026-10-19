@@ -43,7 +43,7 @@ pub mod state;
 pub mod tabs;
 pub mod win;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tauri::{
@@ -57,9 +57,25 @@ use crate::tabs::state::ConnectionKind;
 
 pub const MAIN_WINDOW: &str = "main";
 
+/// Marker whose presence at startup means the previous run did not reach a clean
+/// exit. Written when the app boots, removed by the exit hook in [`main`].
+const SESSION_MARKER: &str = "session.lock";
+
+/// Version of the marker's contents.
+///
+/// A marker without it was written by a build that never removed its marker, so
+/// its presence says nothing about how that run ended. Treating one as an
+/// unclean exit would produce a single false warning on the first launch after
+/// upgrading — which looks exactly like this bug — so only markers this build
+/// could have left behind are reported.
+const SESSION_MARKER_FORMAT: u64 = 2;
+
 pub fn main() {
     let data_root_override = parse_args(std::env::args().skip(1));
     let (data_root, config) = state::bootstrap(data_root_override);
+    // Resolved before `data_root` moves into `setup_app`, because the exit hook
+    // below outlives it.
+    let session_marker = data_root.path.join(SESSION_MARKER);
 
     let builder = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -115,7 +131,17 @@ pub fn main() {
     builder
         .build(tauri::generate_context!())
         .expect("failed to start dshell")
-        .run(|_app, _event| {});
+        .run(move |_app, event| {
+            // The *absence* of the marker is what "the last run exited cleanly"
+            // means, so removing it here is the only thing that keeps the
+            // warning truthful. `RunEvent::Exit` is emitted by the event loop
+            // itself once the last window is gone — which is exactly the path the
+            // close button takes — while a crash or a force kill never reaches
+            // it. That is the case the warning exists for.
+            if matches!(event, tauri::RunEvent::Exit) {
+                clear_session_marker(&session_marker);
+            }
+        });
 }
 
 fn setup_app(
@@ -127,7 +153,7 @@ fn setup_app(
 
     // Leftovers from an unclean exit are worth reporting: job objects should have
     // cleaned up, but a user deserves to know the check happened.
-    let boot_note = detect_unclean_exit(&data_root);
+    let boot_note = detect_unclean_exit(&data_root.path.join(SESSION_MARKER));
 
     let window_config = config.window.clone();
     let mut window_builder = tauri::window::WindowBuilder::new(app, MAIN_WINDOW)
@@ -329,12 +355,17 @@ fn parse_args(args: impl Iterator<Item = String>) -> Option<PathBuf> {
     None
 }
 
-fn detect_unclean_exit(data_root: &root::DataRoot) -> Option<String> {
-    let marker = data_root.path.join("session.lock");
-    let previous = std::fs::read_to_string(&marker).ok();
+/// Arm the session marker and report whether the *previous* run left one behind.
+///
+/// The write has to happen on every boot, before any window exists: a run that
+/// dies during start-up must be distinguishable from one that never started.
+/// Only [`clear_session_marker`] undoes it.
+fn detect_unclean_exit(marker: &Path) -> Option<String> {
+    let previous = std::fs::read_to_string(marker).ok();
     let _ = std::fs::write(
-        &marker,
+        marker,
         serde_json::json!({
+            "format": SESSION_MARKER_FORMAT,
             "pid": std::process::id(),
             "startedAt": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -343,11 +374,25 @@ fn detect_unclean_exit(data_root: &root::DataRoot) -> Option<String> {
         })
         .to_string(),
     );
-    previous.map(|_| {
+    let unclean = previous.is_some_and(|text| {
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|value| value.get("format").and_then(|format| format.as_u64()))
+            == Some(SESSION_MARKER_FORMAT)
+    });
+    unclean.then(|| {
         "上次 dshell 未正常退出。子进程由作业对象回收；若仍有残留的 node 进程，\
          可在任务管理器中结束它们。"
             .to_string()
     })
+}
+
+/// Mark this run as cleanly exited.
+///
+/// Missing is fine — a run that could not write the marker (read-only data root)
+/// never armed it in the first place.
+fn clear_session_marker(marker: &Path) {
+    let _ = std::fs::remove_file(marker);
 }
 
 /// Open a URL with the user's default browser — the escape hatch every tab
@@ -422,4 +467,66 @@ fn shell_execute(verb: &str, target: &str, params: Option<String>) -> std::io::R
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A marker in its own directory, so tests never touch a real data root.
+    fn marker_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dshell-session-marker-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the test directory");
+        dir.join(SESSION_MARKER)
+    }
+
+    #[test]
+    fn a_first_launch_has_nothing_to_report() {
+        let marker = marker_path("first");
+        assert!(detect_unclean_exit(&marker).is_none());
+        // The marker is armed for the *next* launch, which is what makes its
+        // absence meaningful.
+        assert!(marker.exists());
+    }
+
+    #[test]
+    fn a_leftover_marker_is_an_unclean_exit() {
+        let marker = marker_path("leftover");
+        assert!(detect_unclean_exit(&marker).is_none());
+        assert!(
+            detect_unclean_exit(&marker).is_some(),
+            "the second boot must see the first one's marker"
+        );
+    }
+
+    #[test]
+    fn a_marker_from_before_this_fix_is_not_blamed() {
+        let marker = marker_path("legacy");
+        // The pre-fix marker: no `format` field, because that build never
+        // removed it and so could not tell a clean exit from a crash.
+        std::fs::write(&marker, r#"{"pid":1234,"startedAt":1}"#).unwrap();
+        assert!(detect_unclean_exit(&marker).is_none());
+        // Once this build has armed it, the next unclean exit *is* reported.
+        assert!(detect_unclean_exit(&marker).is_some());
+    }
+
+    #[test]
+    fn a_clean_exit_leaves_nothing_for_the_next_boot() {
+        let marker = marker_path("clean");
+        assert!(detect_unclean_exit(&marker).is_none());
+        clear_session_marker(&marker);
+        assert!(!marker.exists());
+        assert!(detect_unclean_exit(&marker).is_none());
+    }
+
+    #[test]
+    fn clearing_an_absent_marker_is_not_an_error() {
+        let marker = marker_path("absent");
+        clear_session_marker(&marker);
+        assert!(!marker.exists());
+    }
 }

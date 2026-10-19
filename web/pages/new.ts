@@ -56,6 +56,7 @@ import {
   row,
   section,
   selectableCard,
+  toastView,
   wideRow,
 } from './shared';
 
@@ -153,13 +154,9 @@ function render(): void {
   renderProbe();
   renderBusy();
 
-  if (store.state.toast && !state.busy) {
-    host.appendChild(
-      h('div', {
-        class: `toast ${store.state.toast.error ? 'toast--error' : ''}`,
-        text: store.state.toast.text,
-      }),
-    );
+  if (!state.busy) {
+    const toast = toastView(store);
+    if (toast) host.appendChild(toast);
   }
 }
 

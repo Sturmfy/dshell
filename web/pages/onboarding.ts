@@ -27,6 +27,7 @@ import {
   pnpmCheckRow,
   pnpmInstallHint,
   section,
+  toastView,
   wideRow,
 } from './shared';
 
@@ -68,14 +69,8 @@ function render(): void {
 
   renderFooter(info);
 
-  if (store.state.toast) {
-    host.appendChild(
-      h('div', {
-        class: `toast ${store.state.toast.error ? 'toast--error' : ''}`,
-        text: store.state.toast.text,
-      }),
-    );
-  }
+  const toast = toastView(store);
+  if (toast) host.appendChild(toast);
 }
 
 function stepper(): HTMLElement {

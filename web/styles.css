@@ -1873,19 +1873,64 @@ select {
   overflow-wrap: anywhere;
 }
 
+/*
+ * A toast is a corner note, not a panel, and it must never sit on top of the
+ * control it talks about. Three things enforce that:
+ *
+ *   * it is anchored to the top-right, below the page's own top action row
+ *     (32px of scroll padding + a 26px small button + a 10px gap), so
+ *     "高级选项" / "重新扫描" stay reachable while it is up;
+ *   * `pointer-events` is off for the box and on only for the close button, so
+ *     even when it does overlap something, clicks reach the page underneath;
+ *   * it can be dismissed by hand, not only by its timer.
+ */
 .toast {
   position: fixed;
+  top: 68px;
   right: 14px;
-  bottom: 14px;
   z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   max-width: 360px;
-  padding: 10px 12px;
+  padding: 10px 10px 10px 12px;
   border: 0.5px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-bg-layer-2);
   box-shadow: var(--dsw-shadow-lv3);
   font-size: 12px;
   line-height: 18px;
+  pointer-events: none;
+}
+
+.toast__text {
+  min-width: 0;
+  /* A boot note can carry several lines; keep the author's breaks. */
+  white-space: pre-line;
+}
+
+.toast__close {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-top: -1px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  /* The only part of the note that takes input. */
+  pointer-events: auto;
+}
+
+.toast__close:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--fg);
 }
 
 .toast--error {

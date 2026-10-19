@@ -4,7 +4,7 @@
 // Rust side, and a page here is a form plus a handful of commands. Anything more
 // elaborate would be more machinery than the problem needs.
 
-import type { PageStore } from '../store';
+import type { PageStore, Store } from '../store';
 import type { EnvironmentSnapshot } from '../types';
 
 export function h(
@@ -293,6 +293,41 @@ export function checkboxRow(
   if (hint) body.appendChild(h('span', { class: 'radio__preview', text: hint }));
   row.appendChild(body);
   return row;
+}
+
+/**
+ * The toast, as one element every page can drop in.
+ *
+ * Two rules are encoded here rather than repeated per page:
+ *
+ * * it is a corner note, not a panel — see `.toast` in `styles.css`, which keeps
+ *   it out of the page's own controls and lets clicks through everywhere except
+ *   the close button;
+ * * it can always be dismissed by hand. A hint that only leaves on a six-second
+ *   timer is still covering something the moment the user wants to act.
+ *
+ * Returns `null` when there is nothing to show, so callers can append without
+ * rendering an empty box.
+ */
+export function toastView(store: Store): HTMLElement | null {
+  const toast = store.state.toast;
+  if (!toast) return null;
+  return h(
+    'div',
+    {
+      class: `toast ${toast.error ? 'toast--error' : ''}`,
+      role: 'status',
+    },
+    h('div', { class: 'toast__text', text: toast.text }),
+    h('button', {
+      type: 'button',
+      class: 'toast__close',
+      title: '关闭提示',
+      'aria-label': '关闭提示',
+      text: '✕',
+      onclick: () => store.dismissToast(),
+    }),
+  );
 }
 
 /**

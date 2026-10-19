@@ -170,6 +170,22 @@ export class Store {
     }, 6000);
   }
 
+  /**
+   * Dismiss the toast now, on the user's terms.
+   *
+   * A note that only ever leaves on a timer is a note the user cannot get out of
+   * the way after reading it, which is precisely when it becomes an obstacle.
+   */
+  dismissToast(): void {
+    if (this.toastTimer !== null) {
+      window.clearTimeout(this.toastTimer);
+      this.toastTimer = null;
+    }
+    if (!this.state.toast) return;
+    this.state.toast = null;
+    this.emit();
+  }
+
   // ------------------------------------------------------------- config
 
   get config(): Config | null {
