@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import './menu.css';
 
 interface TabMenuPayload {
@@ -50,10 +51,28 @@ function icon(action: string): string {
   return `<span class="item__icon"><svg viewBox="0 0 16 16" aria-hidden="true">${ICONS[action] ?? ''}</svg></span>`;
 }
 
+/**
+ * Close the popup as a Tauri window, not with the browser's `window.close()`.
+ *
+ * `window.close()` reaches wry as a WebView2 `WindowCloseRequested` event, and
+ * wry answers that by destroying only the webview container. The transparent,
+ * always-on-top Tauri window then survives with no content: a ghost panel left
+ * over the strip. The window plugin's close command destroys the native window
+ * itself, which is the thing this popup actually is.
+ */
+function closeMenu(): void {
+  void getCurrentWindow()
+    .close()
+    .catch(() => {
+      // Closing tears down the channel that would deliver this promise's result;
+      // a rejection here only means there is no window left to report to.
+    });
+}
+
 function mount(payload: TabMenuPayload): void {
   const root = document.getElementById('menu');
   if (!root) {
-    window.close();
+    closeMenu();
     return;
   }
 
@@ -96,17 +115,17 @@ function mount(payload: TabMenuPayload): void {
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       event.preventDefault();
-      window.close();
+      closeMenu();
     }
   });
   window.addEventListener('blur', () => {
     window.setTimeout(() => {
-      if (performance.now() >= armedAt) window.close();
+      if (performance.now() >= armedAt) closeMenu();
     }, 100);
   });
   window.addEventListener('contextmenu', (event) => event.preventDefault());
   document.addEventListener('mousedown', (event) => {
-    if (event.target === document.body) window.close();
+    if (event.target === document.body) closeMenu();
   });
 
   window.focus();
@@ -116,13 +135,13 @@ function mount(payload: TabMenuPayload): void {
 async function choose(action: string): Promise<void> {
   const payload = window.__DSHELL_TAB_MENU__;
   if (!payload) {
-    window.close();
+    closeMenu();
     return;
   }
   try {
     await invoke('tab_menu_choose', { tabId: payload.tabId, action });
   } finally {
-    window.close();
+    closeMenu();
   }
 }
 
@@ -130,5 +149,5 @@ const payload = window.__DSHELL_TAB_MENU__;
 if (payload) {
   mount(payload);
 } else {
-  window.close();
+  closeMenu();
 }
