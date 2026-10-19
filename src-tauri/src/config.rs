@@ -163,6 +163,17 @@ pub struct Config {
     #[serde(default = "default_kill_on_close")]
     pub kill_on_close: bool,
 
+    /// Keep DSH's working indicators animated even when Windows asks for
+    /// reduced motion.
+    ///
+    /// This is a WebView2 browser argument on DSH content tabs only; dshell's
+    /// own pages still follow the system preference. Browser arguments are
+    /// fixed when a WebView2 environment is created, so the value applies to
+    /// tabs created afterwards; restart dshell to apply it to tabs that are
+    /// already open.
+    #[serde(default = "default_force_dsh_motion")]
+    pub force_dsh_motion: bool,
+
     #[serde(default)]
     pub window: WindowConfig,
 }
@@ -252,6 +263,9 @@ fn default_background_mode() -> String {
 fn default_kill_on_close() -> bool {
     true
 }
+fn default_force_dsh_motion() -> bool {
+    true
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -273,6 +287,7 @@ impl Default for Config {
             background_mode: default_background_mode(),
             fixed_port: false,
             kill_on_close: default_kill_on_close(),
+            force_dsh_motion: default_force_dsh_motion(),
             window: WindowConfig::default(),
         }
     }
@@ -631,6 +646,38 @@ mod tests {
         let parsed: Config =
             serde_json::from_str(r#"{"schemaVersion":1,"onboardingDone":false}"#).unwrap();
         assert!(parsed.kill_on_close);
+    }
+
+    /// DSH's working indicators keep moving by default, even when Windows asks
+    /// for reduced motion. A stored `false` is the user's choice and survives a
+    /// save/load cycle; there is no migration because the field is additive.
+    #[test]
+    fn dsh_motion_defaults_on_and_a_stored_false_is_a_decision() {
+        assert!(Config::default().force_dsh_motion);
+
+        let parsed: Config =
+            serde_json::from_str(r#"{"schemaVersion":2,"onboardingDone":true}"#).unwrap();
+        assert!(
+            parsed.force_dsh_motion,
+            "an older config takes the new default"
+        );
+
+        let parsed: Config = serde_json::from_str(
+            r#"{"schemaVersion":2,"onboardingDone":true,"forceDshMotion":false}"#,
+        )
+        .unwrap();
+        assert!(
+            !parsed.force_dsh_motion,
+            "a stored false must not be overwritten"
+        );
+
+        let config = Config {
+            force_dsh_motion: false,
+            ..Config::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert!(!back.force_dsh_motion);
     }
 
     /// `schemaVersion: 1` stored `killOnClose: false`, because that *was* the

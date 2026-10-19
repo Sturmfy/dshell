@@ -60,6 +60,18 @@ const COLD_START_BUDGET: Duration = Duration::from_secs(300);
 /// How often log lines trigger a full state broadcast at most.
 const LOG_BROADCAST_INTERVAL: Duration = Duration::from_millis(400);
 
+/// Browser arguments used by DSH content tabs when the user keeps DSH's
+/// working animations on.
+///
+/// `--force-prefers-no-reduced-motion` is a Chromium switch, not a WebView2
+/// public API. It is applied to `tab-*` webviews only, so dshell's own pages
+/// and the strip still follow the system preference. Tauri replaces wry's
+/// default `--disable-features` list whenever `additional_browser_args` is
+/// used, so the defaults are repeated here.
+const DSH_CONTENT_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+     --force-prefers-no-reduced-motion";
+
 static TAB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct TabEntry {
@@ -339,20 +351,35 @@ impl TabManager {
         // which is exactly what a restored local tab used to display.
         let placeholder = placeholder_path(&id);
 
+        // Read once, before the WebView2 environment exists: browser arguments
+        // cannot change for a live webview. `try_state` is only absent during
+        // early startup, where the product default is the safe answer.
+        let force_motion = match self.app.try_state::<Arc<crate::AppState>>() {
+            Some(state) => state.config_snapshot().await.force_dsh_motion,
+            None => true,
+        };
+
         // Webview creation hops to the event loop and blocks until it lands;
         // running it from the async runtime (never the main thread) is what keeps
         // this from deadlocking.
+        let mut builder = WebviewBuilder::new(label.clone(), WebviewUrl::App(placeholder.into()))
+            .data_directory(data_dir.clone())
+            // The bridge is the only script dshell injects into a DSH
+            // page; it defines the two globals DSH already knows how to
+            // read, and opens no Tauri IPC surface.
+            .initialization_script(crate::bridge::SCRIPT)
+            .disable_drag_drop_handler()
+            .focused(false);
+        if force_motion {
+            // Applied to DSH content tabs only: dshell's own pages and the
+            // strip keep honoring the system's reduced-motion preference.
+            builder = builder.additional_browser_args(DSH_CONTENT_BROWSER_ARGS);
+        }
+
         let webview = self
             .window
             .add_child(
-                WebviewBuilder::new(label.clone(), WebviewUrl::App(placeholder.into()))
-                    .data_directory(data_dir.clone())
-                    // The bridge is the only script dshell injects into a DSH
-                    // page; it defines the two globals DSH already knows how to
-                    // read, and opens no Tauri IPC surface.
-                    .initialization_script(crate::bridge::SCRIPT)
-                    .disable_drag_drop_handler()
-                    .focused(false)
+                builder
                     // DSH preopens `about:blank` from the sign-in click and
                     // navigates it to the authorization page once the Host
                     // answers. Letting WebView2 create that popup is what

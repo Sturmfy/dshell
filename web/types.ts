@@ -132,6 +132,13 @@ export interface Config {
   backgroundMode: string;
   fixedPort: boolean;
   killOnClose: boolean;
+  /**
+   * Keep DSH's working indicators animated even when Windows asks for reduced
+   * motion. Applies to DSH content tabs only. WebView2 browser arguments are
+   * fixed at environment creation, so the value affects tabs created
+   * afterwards; restart dshell to update tabs that are already open.
+   */
+  forceDshMotion: boolean;
   window: WindowConfig;
 }
 

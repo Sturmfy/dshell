@@ -52,6 +52,25 @@ IPC 权限由**两条**同时成立的条件决定（`capabilities/dshell-ui.jso
 名字在这里是安全边界而不是命名习惯，所以 `tabs/state.rs` 里有单元测试断言
 `page-*` 与 `tab-*` 永不可能撞车。
 
+### DSH 内容页的 reduced-motion 例外
+
+Windows 的“动画效果”关闭时，DSH 的 `prefers-reduced-motion` 会把“进行中”圆环
+变成一段静态弧。`forceDshMotion`（默认 `true`）让 DSH content webview 带上
+WebView2 的 `--force-prefers-no-reduced-motion`，圆环继续旋转。
+
+这里刻意只作用于 `tab-*`：dshell 自己的 `page-*` 与顶部 chrome 仍跟随系统设置。
+实现是 WebView2 的 browser argument，不是对 DSH DOM/CSS 的注入，因此
+“内容区是 DSH 原生界面”这条边界没有被打破。
+
+代价与边界：
+
+- `--force-prefers-no-reduced-motion` 是 Chromium 内部开关，不是 WebView2 公开
+  API；升级 WebView2 后需要回归验证，失效时圆环会回到静态弧。
+- browser argument 在 WebView2 环境创建时固定，所以新选项卡读取新值，已打开的
+  选项卡不会热更新；要让全部选项卡生效需重启 dshell。
+- 默认开启等于替用户覆盖了系统无障碍偏好；设置页提供显式关闭入口，并且只
+  影响 DSH 内容页。
+
 ### 窗口分区：互不重叠的两个区
 
 ```

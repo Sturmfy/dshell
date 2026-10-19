@@ -217,6 +217,19 @@ function renderPreferences(main: HTMLElement, info: AppInfo): void {
     ),
   );
 
+  prefs.body.appendChild(
+    h(
+      'div',
+      { class: 'row row--plain' },
+      checkboxRow(
+        '在 DSH 内容页保持动画播放',
+        '开启后：即使 Windows 开启了“减少动态效果”，DSH 内容选项卡里的工作圆环等动画仍会播放。dshell 自己的设置/向导页面不变；修改后新建的选项卡生效，要让已打开的选项卡也生效需重启 dshell。',
+        config.forceDshMotion,
+        (checked) => void store.updateConfig({ forceDshMotion: checked }),
+      ),
+    ),
+  );
+
   main.appendChild(prefs.root);
 }
 
