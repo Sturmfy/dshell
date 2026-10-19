@@ -63,8 +63,11 @@ use crate::tabs::state::ConnectionKind;
 
 pub const MAIN_WINDOW: &str = "main";
 
-/// The strip handles the menu action after the native popup closes.
+/// The strip handles the action after the styled popup closes.
 pub const TAB_MENU_EVENT: &str = "dshell://tab-menu";
+
+/// DSH's sidebar surface, reported by the content bridge and consumed by chrome.
+pub const TAB_THEME_EVENT: &str = "dshell://tab-theme";
 
 /// Marker whose presence at startup means the previous run did not reach a clean
 /// exit. Written when the app boots, removed by the exit hook in [`main`].

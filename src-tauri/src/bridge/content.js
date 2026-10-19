@@ -78,6 +78,128 @@
     return typeof File === 'function' && value instanceof File
   }
 
+  // DSH renders its own theme and sidebar. The strip cannot read that cross-
+  // origin DOM, so the content page reports the sidebar surface here. The host
+  // validates the origin, then forwards it to chrome as `dshell://tab-theme`.
+  const THEME_INTERVAL_MS = 2000
+  let lastThemeSignature = ''
+
+  function cssColor(value) {
+    const color = typeof value === 'string' ? value.trim() : ''
+    return /^(rgb|rgba|hsl|hsla)\(/i.test(color) || /^#[0-9a-f]{3,8}$/i.test(color)
+      ? color
+      : ''
+  }
+
+  function isDarkColor(color) {
+    const match = color.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/i)
+    if (!match) return true
+    const channels = [match[1], match[2], match[3]].map(Number).map((value) => {
+      const channel = value / 255
+      return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+    })
+    return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722 < 0.5
+  }
+
+  function hasSurface(element) {
+    const style = getComputedStyle(element)
+    return Boolean(cssColor(style.backgroundColor)) && style.backgroundColor !== 'rgba(0, 0, 0, 0)'
+  }
+
+  function findSidebar() {
+    // DSH's semantic class survives minification (`…_sidebarCol`), while the
+    // exact prefix does not. Pick the largest matching surface, not the first
+    // nested sidebar item.
+    let best = null
+    let bestArea = 0
+    for (const element of document.querySelectorAll('[class*="sidebar" i], [data-testid*="sidebar" i]')) {
+      const rect = element.getBoundingClientRect()
+      if (rect.width < 120 || rect.height < window.innerHeight * 0.4 || !hasSurface(element)) continue
+      const area = rect.width * rect.height
+      if (area > bestArea) {
+        best = element
+        bestArea = area
+      }
+    }
+    if (best) return best
+
+    // Fallback for a renamed class: the sidebar is the background surface at
+    // the left edge, so sample a few points instead of scanning the whole DOM.
+    const points = [
+      [1, window.innerHeight / 2],
+      [24, window.innerHeight / 2],
+      [window.innerWidth * 0.08, window.innerHeight / 2],
+    ]
+    for (const [x, y] of points) {
+      for (const element of document.elementsFromPoint(x, y)) {
+        const rect = element.getBoundingClientRect()
+        if (rect.width < 120 || rect.width > window.innerWidth * 0.5) continue
+        if (rect.height < window.innerHeight * 0.4 || !hasSurface(element)) continue
+        return element
+      }
+    }
+    return document.body
+  }
+
+  function reportTheme(force) {
+    if (!document.body) return
+    const sidebar = findSidebar()
+    const sidebarStyle = getComputedStyle(sidebar)
+    const bodyStyle = getComputedStyle(document.body)
+    const background =
+      cssColor(sidebarStyle.backgroundColor) || cssColor(bodyStyle.backgroundColor)
+    const foreground = cssColor(sidebarStyle.color) || cssColor(bodyStyle.color)
+    if (!background || !foreground) return
+    const mode = isDarkColor(background) ? 'dark' : 'light'
+    const signature = `${background}|${foreground}|${mode}`
+    if (!force && signature === lastThemeSignature) return
+    lastThemeSignature = signature
+    post({ v: PROTOCOL, type: 'theme', background, foreground, mode })
+  }
+
+  function installThemeReporter() {
+    let started = false
+    const start = () => {
+      if (started) return
+      started = true
+      reportTheme(true)
+      new MutationObserver(() => reportTheme(false)).observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme', 'data-ds-theme-source'],
+      })
+      if (document.body) {
+        new MutationObserver(() => reportTheme(false)).observe(document.body, {
+          attributes: true,
+          attributeFilter: ['class', 'style'],
+        })
+      }
+      const media = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)')
+      if (media && typeof media.addEventListener === 'function') {
+        media.addEventListener('change', () => reportTheme(true))
+      }
+      // Theme tokens can change without an attribute mutation (CSS variables
+      // on an ancestor); a cheap poll keeps the strip in step with that. It is
+      // forced because chrome may not have been listening when the first
+      // report was posted during boot.
+      setInterval(() => reportTheme(true), THEME_INTERVAL_MS)
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) reportTheme(true)
+      })
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', start, { once: true })
+    } else {
+      start()
+    }
+    // DSH's client bootstrap can replace the document early enough that the
+    // load event is missed; the timer makes the reporter self-starting.
+    setTimeout(start, 500)
+    // The body may be replaced by DSH's client-side bootstrap after load.
+    setTimeout(() => reportTheme(true), 1000)
+  }
+
+  installThemeReporter()
+
   function settlePick(message) {
     const pending = pendingPicks.get(message.id)
     if (!pending) return
@@ -105,8 +227,10 @@
   webview.addEventListener('message', (event) => {
     const message = event && event.data
     if (!message || message.v !== PROTOCOL) return
-    if (message.type === 'hello') hostReady = true
-    else if (message.type === 'pickDirectoryResult') settlePick(message)
+    if (message.type === 'hello') {
+      hostReady = true
+      reportTheme(true)
+    } else if (message.type === 'pickDirectoryResult') settlePick(message)
     else if (message.type === 'hostPathsResult') settlePaths(message)
   })
 

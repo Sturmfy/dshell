@@ -22,6 +22,16 @@ const controls = document.getElementById('window-controls') as HTMLElement;
 
 const store = new Store();
 
+interface TabTheme {
+  tabId: string;
+  background: string;
+  foreground: string;
+  mode: 'dark' | 'light';
+}
+
+/** Latest DSH sidebar surface reported by each content tab. */
+const tabThemes = new Map<string, TabTheme>();
+
 let renaming: string | null = null;
 let renameValue = '';
 
@@ -308,11 +318,44 @@ function render() {
       onclick: () => void win.close().catch((error) => store.toast(String(error), true)),
     }),
   );
+
+  pruneTabThemes();
+  applyActiveTheme();
 }
 
 function isPageActive(kind: PageKind): boolean {
   const active = store.state.tabs.find((tab) => tab.id === store.state.activeId);
   return active?.pageKind === kind;
+}
+
+/**
+ * Paint the active tab with the DSH surface it sits above. Unselected tabs stay
+ * transparent and keep the strip's own muted text; only the active card takes
+ * the page's sidebar colour and foreground.
+ */
+function applyActiveTheme(): void {
+  const chrome = document.getElementById('chrome');
+  if (!chrome) return;
+  const active = store.state.tabs.find((tab) => tab.id === store.state.activeId);
+  const theme = active ? tabThemes.get(active.id) : undefined;
+  if (!theme) {
+    chrome.style.removeProperty('--tab-active-bg');
+    chrome.style.removeProperty('--tab-active-fg');
+    chrome.style.removeProperty('--tab-active-border');
+    return;
+  }
+  chrome.style.setProperty('--tab-active-bg', theme.background);
+  chrome.style.setProperty('--tab-active-fg', theme.foreground);
+  chrome.style.setProperty(
+    '--tab-active-border',
+    `color-mix(in srgb, ${theme.foreground} 18%, transparent)`,
+  );
+}
+
+function pruneTabThemes(): void {
+  for (const id of tabThemes.keys()) {
+    if (!store.state.tabs.some((tab) => tab.id === id)) tabThemes.delete(id);
+  }
 }
 
 function beginTabRename(tabId: string): void {
@@ -451,6 +494,11 @@ void (async () => {
   installShortcuts();
   void listen<{ tabId: string; action: string }>(events.tabMenu, ({ tabId, action }) => {
     performTabMenuAction(tabId, action);
+  });
+  void listen<TabTheme>(events.tabTheme, (theme) => {
+    if (!theme || typeof theme.tabId !== 'string') return;
+    tabThemes.set(theme.tabId, theme);
+    applyActiveTheme();
   });
   store.subscribe(render);
   await store.start();

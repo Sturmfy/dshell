@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, Webview};
+use tauri::{AppHandle, Emitter, Manager, Webview};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2AcceleratorKeyPressedEventArgs,
     ICoreWebView2ContextMenuItemCollection, ICoreWebView2ContextMenuRequestedEventArgs,
@@ -71,12 +71,23 @@ enum BridgeRequest {
         #[serde(default)]
         features: Value,
     },
+    /// DSH's current sidebar surface, used by the chrome strip to style the
+    /// active tab without reading the remote page's DOM itself.
+    Theme {
+        v: u8,
+        background: String,
+        foreground: String,
+        mode: String,
+    },
 }
 
 impl BridgeRequest {
     fn version(&self) -> u8 {
         match self {
-            Self::PickDirectory { v, .. } | Self::HostPaths { v, .. } | Self::Ready { v, .. } => *v,
+            Self::PickDirectory { v, .. }
+            | Self::HostPaths { v, .. }
+            | Self::Ready { v, .. }
+            | Self::Theme { v, .. } => *v,
         }
     }
 }
@@ -255,7 +266,32 @@ impl ContentBridge {
                 }));
             }
             BridgeRequest::Ready { .. } => {}
+            BridgeRequest::Theme {
+                background,
+                foreground,
+                mode,
+                ..
+            } => self.report_theme(&background, &foreground, &mode),
         }
+    }
+
+    fn report_theme(&self, background: &str, foreground: &str, mode: &str) {
+        if !matches!(mode, "dark" | "light")
+            || !is_safe_css_color(background)
+            || !is_safe_css_color(foreground)
+        {
+            return;
+        }
+        let tab_id = self.label.strip_prefix("tab-").unwrap_or(&self.label);
+        let _ = self.app.emit(
+            crate::TAB_THEME_EVENT,
+            json!({
+                "tabId": tab_id,
+                "background": background,
+                "foreground": foreground,
+                "mode": mode,
+            }),
+        );
     }
 
     /// Run the picker off the WebView2 thread and answer the page when it
@@ -320,6 +356,18 @@ fn pick_result_error(id: &str, message: &str) -> Value {
         "ok": false,
         "error": message,
     })
+}
+
+/// Colors cross the bridge into a CSS custom property, so accept only the
+/// computed forms DSH actually produces (never arbitrary CSS text).
+fn is_safe_css_color(value: &str) -> bool {
+    let value = value.trim();
+    value.len() <= 64
+        && (value.starts_with('#')
+            || value.starts_with("rgb(")
+            || value.starts_with("rgba(")
+            || value.starts_with("hsl(")
+            || value.starts_with("hsla("))
 }
 
 /// Remove the browser-only commands this app has deliberately closed. The
@@ -504,6 +552,22 @@ mod tests {
             parse_request(r#"{"v":1,"type":"ready","features":{"hostPaths":true}}"#)
                 .expect("ready request");
         assert!(matches!(ready, BridgeRequest::Ready { .. }));
+
+        let theme: BridgeRequest = parse_request(
+            r#"{"v":1,"type":"theme","background":"rgb(27, 27, 28)","foreground":"rgb(249, 250, 251)","mode":"dark"}"#,
+        )
+        .expect("theme request");
+        assert!(matches!(theme, BridgeRequest::Theme { .. }));
+    }
+
+    #[test]
+    fn accepts_only_computed_css_colors() {
+        assert!(is_safe_css_color("rgb(27, 27, 28)"));
+        assert!(is_safe_css_color("rgba(0, 0, 0, 0.5)"));
+        assert!(is_safe_css_color("#1b1b1c"));
+        assert!(!is_safe_css_color("red; background: url(x)"));
+        assert!(!is_safe_css_color("var(--x)"));
+        assert!(!is_safe_css_color(""));
     }
 
     #[test]

@@ -28,8 +28,10 @@ export const events = {
   /** Runtime preparation before a launch: `{ runtimeId, stage, message }`. */
   prepareProgress: 'dshell://prepare-progress',
   shortcut: 'dshell://shortcut',
-  /** Native tab menu selection: `{ tabId, action }`. */
+  /** Styled tab menu selection: `{ tabId, action }`. */
   tabMenu: 'dshell://tab-menu',
+  /** DSH sidebar surface for one content tab. */
+  tabTheme: 'dshell://tab-theme',
 } as const;
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {

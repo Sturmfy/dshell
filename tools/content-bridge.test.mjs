@@ -25,13 +25,25 @@ function boot(options = {}) {
     }
   }
   const documentListeners = []
+  const body = {
+    className: '',
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 1280, height: 800 }),
+  }
   const document = {
+    readyState: 'complete',
+    body,
+    documentElement: body,
+    querySelectorAll: () => [],
+    elementsFromPoint: () => [],
     addEventListener(type, listener) {
       documentListeners.push({ type, listener })
     },
   }
   const window = {
     chrome: { webview },
+    innerWidth: 1280,
+    innerHeight: 800,
+    matchMedia: () => ({ addEventListener() {} }),
     __dshellContentBridgeInstalled: undefined,
   }
   window.window = window
@@ -42,6 +54,15 @@ function boot(options = {}) {
     crypto,
     setTimeout,
     clearTimeout,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    MutationObserver: class MutationObserver {
+      observe() {}
+    },
+    getComputedStyle: () => ({
+      backgroundColor: 'rgb(21, 21, 23)',
+      color: 'rgb(249, 250, 251)',
+    }),
     console,
     HTMLInputElement: class HTMLInputElement {},
   }
@@ -126,8 +147,18 @@ test('missing additional-object support leaves host paths disabled', () => {
   const bridge = boot({ additionalObjects: false })
   assert.equal(bridge.window.__DSH_HOST_PATHS__, undefined)
   assert.equal(typeof bridge.window.__DSH_DIRECTORY_PICKER__.pick, 'function')
-  assert.equal(bridge.messages.at(-1).type, 'ready')
-  assert.equal(bridge.messages.at(-1).features.hostPaths, false)
+  const ready = bridge.messages.find(message => message.type === 'ready')
+  assert.ok(ready)
+  assert.equal(ready.features.hostPaths, false)
+})
+
+test('reports the sidebar surface for the strip', () => {
+  const bridge = boot()
+  const theme = bridge.messages.find(message => message.type === 'theme')
+  assert.ok(theme, 'a theme message was posted')
+  assert.equal(theme.background, 'rgb(21, 21, 23)')
+  assert.equal(theme.foreground, 'rgb(249, 250, 251)')
+  assert.equal(theme.mode, 'dark')
 })
 
 test('ignores messages from another protocol version', async () => {

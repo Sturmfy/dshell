@@ -466,6 +466,11 @@ capability，因此内容页即使被导航到外部 origin，也拿不到 dshel
 `__DSH_HOST_PATHS__` 是尽力而为：路径尚未就绪时返回空串，DSH 按原逻辑上传；
 粘贴文件不经过该桥（仍上传）。
 
+内容页还会周期性报告 DSH 左侧边栏的 `background` / `foreground` / `mode`。宿主
+校验 origin 和颜色格式后发 `dshell://tab-theme` 给 chrome；chrome 只把其中的
+背景色、前景色和派生边框色应用到**选中** tab，未选中 tab 保持透明。DSH 切换
+主题时 active tab 会自动跟随，而不是把颜色写死在 dshell 的 CSS 里。
+
 内容 tab 的浏览器行为由同一个 WebView2 入口收紧：
 
 - 内容 tab **只在可编辑控件上保留 WebView2 右键菜单**（输入框/文本域/

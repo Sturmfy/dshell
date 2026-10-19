@@ -307,18 +307,34 @@ textarea {
   width: 100%;
   height: var(--bar-h);
   background: var(--bg-sunken);
-  border-bottom: 0.5px solid var(--border);
+  position: relative;
+}
+
+/* The separator belongs to the strip, not to every tab: the active tab's
+   opaque surface must be able to cover it. */
+.chrome::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .chrome__spacer {
   flex: 1 1 auto;
   min-width: 24px;
+  position: relative;
+  z-index: 1;
 }
 
 .tabstrip {
   display: flex;
   align-items: flex-end;
-  gap: 2px;
+  gap: 0;
   padding: 4px 4px 0 6px;
   overflow: hidden;
   position: relative;
@@ -335,7 +351,7 @@ textarea {
   flex: 0 1 190px;
   min-width: 108px;
   max-width: 220px;
-  height: 30px;
+  height: calc(var(--bar-h) - 4px);
   padding: 0 6px 0 8px;
   border-radius: var(--radius) var(--radius) 0 0;
   background: transparent;
@@ -344,6 +360,31 @@ textarea {
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
+  z-index: 1;
+}
+
+/* Chrome-style hairline between two inactive tabs. It is hidden next to the
+   active tab and while either neighbour is hovered. */
+.tab + .tab::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1px;
+  height: 16px;
+  transform: translateY(-50%);
+  background: var(--border);
+  pointer-events: none;
+}
+
+.tab:first-child::before,
+.tab--active::before,
+.tab--active + .tab::before,
+.tab:hover::before,
+.tab:hover + .tab::before,
+.tab--dragging::before,
+.tab--dragging + .tab::before {
+  display: none;
 }
 
 .tab:hover {
@@ -352,9 +393,9 @@ textarea {
 }
 
 .tab--active {
-  background: var(--bg);
-  border-color: var(--border);
-  color: var(--fg);
+  background: var(--tab-active-bg, var(--bg));
+  border-color: var(--tab-active-border, var(--border));
+  color: var(--tab-active-fg, var(--fg));
 }
 
 .tab--dragging {
@@ -442,7 +483,7 @@ textarea {
 }
 
 .tab--active .tab__icon {
-  color: var(--fg);
+  color: var(--tab-active-fg, var(--fg));
 }
 
 /* Shown in place of the close button for the one tab that may not be closed. */
@@ -473,6 +514,7 @@ textarea {
 .tab:hover .tab__close,
 .tab--active .tab__close {
   opacity: 1;
+  color: var(--tab-active-fg, var(--fg));
 }
 
 .tab__close:hover {
