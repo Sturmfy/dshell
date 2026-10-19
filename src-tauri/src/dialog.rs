@@ -326,8 +326,12 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub fn pick_directory(initial: Option<&str>, owner: Option<isize>) -> Result<Option<String>, String> {
-    imp::pick_folder("选择文件夹", initial, owner)
+pub fn pick_directory(
+    initial: Option<&str>,
+    owner: Option<isize>,
+    title: &str,
+) -> Result<Option<String>, String> {
+    imp::pick_folder(title, initial, owner)
         .map(|picked| picked.map(|path| path.to_string_lossy().to_string()))
 }
 
@@ -346,6 +350,7 @@ pub fn pick_file(title: Option<&str>, owner: Option<isize>) -> Result<Option<Str
 pub fn pick_directory(
     _initial: Option<&str>,
     _owner: Option<isize>,
+    _title: &str,
 ) -> Result<Option<String>, String> {
     Ok(None)
 }

@@ -31,6 +31,7 @@ use tauri::{
 };
 use tokio::sync::Mutex;
 
+use crate::bridge::ContentBridge;
 use crate::config::DshHomeSetting;
 use crate::dsh::process::{self, LaunchEvent, SpawnRequest};
 use crate::dsh::url::LaunchUrl;
@@ -75,6 +76,10 @@ struct TabEntry {
     /// One-shot: only the *first* finished load means "ready". DSH is an SPA, so
     /// switching sessions inside it never fires this again.
     first_load_seen: bool,
+    /// Narrow page bridge for content tabs; `None` for dshell's own pages and
+    /// when WebView2 refused to attach it (DSH then falls back to the Host
+    /// chooser and uploads).
+    bridge: Option<ContentBridge>,
 }
 
 impl TabEntry {
@@ -255,6 +260,28 @@ impl TabManager {
         activate: bool,
     ) -> String {
         let id = spec.id.clone();
+        // Page tabs are dshell's own documents and must never get the content
+        // bridge; only a DSH tab has a page that reads its globals.
+        let bridge = if spec.connection.page().is_none() {
+            match ContentBridge::attach(
+                self.app.clone(),
+                &webview,
+                Self::webview_label(&id),
+            ) {
+                Ok(bridge) => Some(bridge),
+                Err(err) => {
+                    if let Some(state) = self.app.try_state::<Arc<crate::AppState>>() {
+                        process::debug_log(
+                            &state.data_root.path,
+                            &format!("content bridge attach failed for {id}: {err}"),
+                        );
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let entry = TabEntry {
             runtime: TabRuntime::new(spec),
             webview,
@@ -262,6 +289,7 @@ impl TabManager {
             instance_home,
             data_dir,
             first_load_seen: false,
+            bridge,
         };
         {
             let mut tabs = self.tabs.lock().await;
@@ -319,6 +347,10 @@ impl TabManager {
             .add_child(
                 WebviewBuilder::new(label.clone(), WebviewUrl::App(placeholder.into()))
                     .data_directory(data_dir.clone())
+                    // The bridge is the only script dshell injects into a DSH
+                    // page; it defines the two globals DSH already knows how to
+                    // read, and opens no Tauri IPC surface.
+                    .initialization_script(crate::bridge::SCRIPT)
                     .disable_drag_drop_handler()
                     .focused(false)
                     // DSH preopens `about:blank` from the sign-in click and
@@ -429,6 +461,7 @@ impl TabManager {
                      可在 https://developer.microsoft.com/microsoft-edge/webview2/ 安装。",
                 )
             })?;
+        crate::webview_settings::disable_context_menu(&webview);
 
         let spec = TabSpec {
             id: id.clone(),
@@ -1186,6 +1219,9 @@ impl TabManager {
             Some(entry) if entry.runtime.generation == generation => {
                 entry.runtime.launch_url = Some(url.clone());
                 entry.runtime.spec.display_origin = Some(url.origin.clone());
+                if let Some(bridge) = &entry.bridge {
+                    bridge.set_origin(&url.origin);
+                }
                 true
             }
             _ => false,
@@ -1195,6 +1231,17 @@ impl TabManager {
     /// Record that a tab's content webview was navigated to its backend, and
     /// where — the diagnostic trail for "the tab never showed DSH".
     pub async fn record_navigation(&self, id: &str, origin: &str) {
+        {
+            let mut tabs = self.tabs.lock().await;
+            if let Some(entry) = tabs.get_mut(id) {
+                if entry.runtime.spec.display_origin.is_none() {
+                    entry.runtime.spec.display_origin = Some(origin.to_string());
+                }
+                if let Some(bridge) = &entry.bridge {
+                    bridge.set_origin(origin);
+                }
+            }
+        }
         let root = self
             .app
             .try_state::<Arc<crate::AppState>>()

@@ -24,7 +24,6 @@ const store = new Store();
 
 let renaming: string | null = null;
 let renameValue = '';
-let menu: { tabId: string; x: number; y: number } | null = null;
 
 // ------------------------------------------------------------------ helpers
 
@@ -206,8 +205,10 @@ function render() {
     });
     el.addEventListener('contextmenu', (event) => {
       event.preventDefault();
-      menu = { tabId: tab.id, x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY };
-      render();
+      const { clientX, clientY } = event as MouseEvent;
+      void api
+        .showTabMenu(tab.id, clientX, clientY)
+        .catch((error) => store.toast(asFailure(error).message, true));
     });
     el.addEventListener('dragstart', (event) => {
       (event as DragEvent).dataTransfer?.setData('text/plain', tab.id);
@@ -265,8 +266,9 @@ function render() {
           event.stopPropagation();
           const last = tabs[tabs.length - 1];
           if (last) {
-            menu = { tabId: last.id, x: 12, y: 44 };
-            render();
+            void api
+              .showTabMenu(last.id, 12, 44)
+              .catch((error) => store.toast(asFailure(error).message, true));
           }
         },
       }),
@@ -306,8 +308,6 @@ function render() {
       onclick: () => void win.close().catch((error) => store.toast(String(error), true)),
     }),
   );
-
-  renderMenu();
 }
 
 function isPageActive(kind: PageKind): boolean {
@@ -315,62 +315,51 @@ function isPageActive(kind: PageKind): boolean {
   return active?.pageKind === kind;
 }
 
-function renderMenu() {
-  document.querySelector('.menu')?.remove();
-  if (!menu) return;
-  const tab = store.state.tabs.find((candidate) => candidate.id === menu!.tabId);
-  const isPage = Boolean(tab?.pageKind);
+function beginTabRename(tabId: string): void {
+  const tab = store.state.tabs.find((candidate) => candidate.id === tabId);
+  if (!tab || tab.pageKind) return;
+  renaming = tabId;
+  renameValue = tab.title;
+  render();
+}
 
-  // The item list is built per tab kind, because a page tab has no backend to
-  // restart, no site data to clear and no DSH origin to open in a browser.
-  const items: [string, () => void, boolean?][] = isPage
-    ? [['关闭', () => void store.close(menu!.tabId), true]]
-    : [
-        [
-          '重命名',
-          () => {
-            renaming = menu!.tabId;
-            renameValue = tab?.title ?? '';
-            menu = null;
-            render();
-          },
-        ],
-        ['重新加载页面', () => void store.reload(menu!.tabId)],
-        ['重启后端进程', () => void store.restart(menu!.tabId)],
-        [
-          '在系统浏览器中打开',
-          () =>
-            void api
-              .openInSystemBrowser(menu!.tabId)
-              .catch((error) => store.toast(asFailure(error).message, true)),
-        ],
-        [
-          '清空该实例数据（登录态）',
-          () => void api.clearTabData(menu!.tabId).then(() => store.toast('已清空该实例的站点数据')),
-        ],
-        ['关闭其他', () => void store.closeOthers(menu!.tabId)],
-        ['关闭', () => void store.close(menu!.tabId), true],
-      ];
-
-  const el = h('div', {
-    class: 'menu',
-    style: `left:${Math.min(menu.x, window.innerWidth - 250)}px; top:${Math.min(menu.y, window.innerHeight - 270)}px`,
-  });
-  for (const [label, action, danger] of items) {
-    el.appendChild(
-      h('button', {
-        class: `menu__item ${danger ? 'menu__item--danger' : ''}`,
-        text: label,
-        onclick: () => {
-          menu = null;
-          action();
-          render();
-        },
-      }),
-    );
-    if (label === '清空该实例数据（登录态）') el.appendChild(h('div', { class: 'menu__sep' }));
+/**
+ * Run one native-menu selection. The menu itself lives in Rust; all actions
+ * stay here so their toasts, tab refresh, and rename editor keep one owner.
+ * @param tabId - the tab whose menu was opened.
+ * @param action - the menu item suffix.
+ */
+function performTabMenuAction(tabId: string, action: string): void {
+  switch (action) {
+    case 'rename':
+      beginTabRename(tabId);
+      break;
+    case 'reload':
+      void store.reload(tabId);
+      break;
+    case 'restart':
+      void store.restart(tabId);
+      break;
+    case 'open-browser':
+      void api
+        .openInSystemBrowser(tabId)
+        .catch((error) => store.toast(asFailure(error).message, true));
+      break;
+    case 'clear-data':
+      void api
+        .clearTabData(tabId)
+        .then(() => store.toast('已清空该实例的站点数据'))
+        .catch((error) => store.toast(asFailure(error).message, true));
+      break;
+    case 'close-others':
+      void store.closeOthers(tabId);
+      break;
+    case 'close':
+      void store.close(tabId);
+      break;
+    default:
+      break;
   }
-  document.body.appendChild(el);
 }
 
 async function commitRename() {
@@ -398,13 +387,7 @@ function cycleTab(direction: number) {
 function installShortcuts() {
   window.addEventListener('keydown', (event) => {
     const ctrl = event.ctrlKey || event.metaKey;
-    if (!ctrl) {
-      if (event.key === 'Escape' && menu) {
-        menu = null;
-        render();
-      }
-      return;
-    }
+    if (!ctrl) return;
     const index = Number.parseInt(event.key, 10);
     switch (event.key.toLowerCase()) {
       case 't':
@@ -462,17 +445,13 @@ function installShortcuts() {
   });
 }
 
-document.addEventListener('click', (event) => {
-  if (menu && !(event.target as HTMLElement).closest('.menu')) {
-    menu = null;
-    render();
-  }
-});
-
 // ---------------------------------------------------------------------- boot
 
 void (async () => {
   installShortcuts();
+  void listen<{ tabId: string; action: string }>(events.tabMenu, ({ tabId, action }) => {
+    performTabMenuAction(tabId, action);
+  });
   store.subscribe(render);
   await store.start();
   render();

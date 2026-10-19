@@ -33,6 +33,7 @@ const dev = process.argv.includes('--dev');
 const entryPoints = {
   strip: path.join(webDir, 'strip.ts'),
   shell: path.join(webDir, 'shell.ts'),
+  menu: path.join(webDir, 'menu.ts'),
   'pages/new': path.join(webDir, 'pages', 'new.ts'),
   'pages/onboarding': path.join(webDir, 'pages', 'onboarding.ts'),
   'pages/settings': path.join(webDir, 'pages', 'settings.ts'),
@@ -55,6 +56,7 @@ async function rewriteHtml(file, replacements) {
  */
 async function copyDocs() {
   await cp(path.join(webDir, 'index.html'), path.join(outDir, 'index.html'));
+  await cp(path.join(webDir, 'menu.html'), path.join(outDir, 'menu.html'));
   await cp(path.join(webDir, 'styles.css'), path.join(outDir, 'styles.css'));
   await cp(path.join(webDir, 'shell'), path.join(outDir, 'shell'), { recursive: true });
 
@@ -111,6 +113,10 @@ async function assertEveryBundleExists() {
   const html = await readFile(path.join(outDir, 'index.html'), 'utf8');
   for (const match of html.matchAll(/src="\.\/([\w.-]+\.js)"/g)) {
     referenced.push({ from: 'index.html', bundle: match[1] });
+  }
+  const menuHtml = await readFile(path.join(outDir, 'menu.html'), 'utf8');
+  for (const match of menuHtml.matchAll(/src="\.\/([\w.-]+\.js)"/g)) {
+    referenced.push({ from: 'menu.html', bundle: match[1] });
   }
 
   const missing = [];

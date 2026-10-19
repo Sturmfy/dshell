@@ -1806,43 +1806,6 @@ select {
   background: var(--border);
 }
 
-/* Menu surface: DSH's menus are an elevated layer with the shared elevation
-   stroke, not a hairline border on the page background. */
-.menu {
-  position: fixed;
-  z-index: 20;
-  min-width: 220px;
-  padding: 4px;
-  border: 0.5px solid var(--dsw-alias-border-l3);
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-bg-layer-2);
-  box-shadow: var(--dsw-shadow-lv3);
-}
-
-.menu__item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 6px 10px;
-  border: none;
-  border-radius: var(--dsw-radius-sm);
-  background: transparent;
-}
-
-.menu__item:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.menu__item--danger {
-  color: var(--danger);
-}
-
-.menu__sep {
-  height: 1px;
-  margin: 4px 6px;
-  background: var(--border);
-}
-
 .tooltip {
   position: fixed;
   z-index: 30;

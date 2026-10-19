@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 use crate::config::{Config, DshHomeSetting, ManagedInstall};
 use crate::error::{Action, Failure, FailureCode};
@@ -752,6 +752,80 @@ pub async fn restart_tab(state: Shared<'_>, tab_id: String) -> Result<(), Failur
 #[tauri::command]
 pub async fn reload_tab(state: Shared<'_>, tab_id: String) -> Result<(), Failure> {
     state.manager.reload(&tab_id).await
+}
+
+/// Show the tab menu as a small styled popup window. A native menu follows the
+/// OS theme and cannot match dshell's surface; this window is part of dshell's
+/// own UI and still works on every Tauri target.
+#[tauri::command]
+pub async fn show_tab_menu(
+    app: AppHandle,
+    tab_id: String,
+    x: f64,
+    y: f64,
+) -> Result<(), Failure> {
+    let state = state_of(&app)?;
+    let tabs = state.manager.views().await;
+    let tab = tabs
+        .iter()
+        .find(|tab| tab.id == tab_id)
+        .ok_or_else(|| Failure::new(FailureCode::Internal, "选项卡不存在"))?;
+    let is_page = tab.page_kind.is_some();
+
+    for (label, window) in app.webview_windows() {
+        if label.starts_with("tab-menu-") {
+            let _ = window.close();
+        }
+    }
+
+    let main = app
+        .get_window(crate::MAIN_WINDOW)
+        .ok_or_else(|| Failure::new(FailureCode::Internal, "主窗口不存在"))?;
+    let scale = main.scale_factor().unwrap_or(1.0);
+    let origin = main
+        .outer_position()
+        .map_err(|err| Failure::new(FailureCode::Internal, format!("读取窗口位置失败：{err}")))?
+        .to_logical::<f64>(scale);
+    let width = 228.0;
+    let height = if is_page { 50.0 } else { 258.0 };
+    let label = format!(
+        "tab-menu-{tab_id}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default()
+    );
+    let payload = serde_json::json!({ "tabId": tab_id, "page": is_page });
+    let script = format!("window.__DSHELL_TAB_MENU__ = {payload};");
+    let menu = WebviewWindowBuilder::new(&app, label, WebviewUrl::App("menu.html".into()))
+        .title("")
+        .inner_size(width, height)
+        .position(origin.x + x, origin.y + y)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(true)
+        .visible(false)
+        .initialization_script(&script)
+        .build()
+        .map_err(|err| Failure::new(FailureCode::Internal, format!("创建菜单失败：{err}")))?;
+    menu.show()
+        .and_then(|_| menu.set_focus())
+        .map_err(|err| Failure::new(FailureCode::Internal, format!("显示菜单失败：{err}")))?;
+    Ok(())
+}
+
+/// The popup's only job is to report which item was chosen; the strip executes
+/// the action so its toast and refresh behavior stay in one place.
+#[tauri::command]
+pub fn tab_menu_choose(app: AppHandle, tab_id: String, action: String) -> Result<(), Failure> {
+    app.emit(
+        crate::TAB_MENU_EVENT,
+        serde_json::json!({ "tabId": tab_id, "action": action }),
+    )
+    .map_err(|err| Failure::new(FailureCode::Internal, format!("菜单事件发送失败：{err}")))
 }
 
 #[tauri::command]
@@ -1622,69 +1696,17 @@ pub async fn open_path(path: String) -> Result<(), Failure> {
         .map_err(|err| Failure::new(FailureCode::Internal, format!("无法打开路径：{err}")))
 }
 
-/// The main window's HWND, so a native dialog can own itself to it.
-///
-/// Without an owner a dialog is not modal to dshell and may open *behind* the
-/// main window — on a maximized window that is indistinguishable from "the button
-/// did nothing". The handle travels as an integer because that is all the
-/// hand-declared Win32 surface needs.
-fn dialog_owner(app: &AppHandle) -> Option<isize> {
-    #[cfg(windows)]
-    {
-        let window = app.get_window(crate::MAIN_WINDOW)?;
-        window.hwnd().ok().map(|hwnd| hwnd.0 as isize)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        None
-    }
-}
-
 #[tauri::command]
 pub async fn pick_directory(
     app: AppHandle,
     initial: Option<String>,
 ) -> Result<Option<String>, Failure> {
-    let state = state_of(&app)?;
-    let result = crate::dialog::pick_directory(initial.as_deref(), dialog_owner(&app));
-    // A native dialog either works or does not, and the difference is invisible
-    // from the page: log the outcome so "the button did nothing" is answerable
-    // from the debug log instead of guesswork.
-    crate::dsh::process::debug_log(
-        &state.data_root.path,
-        &format!(
-            "pick_directory(initial={initial:?}) -> {}",
-            match &result {
-                Ok(Some(path)) => path.to_string(),
-                Ok(None) => "cancelled".to_string(),
-                Err(err) => format!("FAILED: {err}"),
-            }
-        ),
-    );
-    result.map_err(|err| {
-        Failure::new(FailureCode::Internal, err)
-            .with_detail("目录选择器用 Win32 的 GetOpenFileNameW；也可以在输入框里直接填写绝对路径。")
-    })
+    crate::picker::pick_directory(&app, initial, "选择文件夹").await
 }
 
 #[tauri::command]
 pub async fn pick_file(app: AppHandle, title: Option<String>) -> Result<Option<String>, Failure> {
-    let result = crate::dialog::pick_file(title.as_deref(), dialog_owner(&app));
-    if let Some(state) = app.try_state::<Arc<AppState>>() {
-        crate::dsh::process::debug_log(
-            &state.data_root.path,
-            &format!(
-                "pick_file() -> {}",
-                match &result {
-                    Ok(Some(path)) => path.to_string(),
-                    Ok(None) => "cancelled".to_string(),
-                    Err(err) => format!("FAILED: {err}"),
-                }
-            ),
-        );
-    }
-    result.map_err(|err| Failure::new(FailureCode::Internal, err))
+    crate::picker::pick_file(&app, title).await
 }
 
 // --------------------------------------------------------------- app events

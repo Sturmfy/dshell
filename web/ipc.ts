@@ -28,6 +28,8 @@ export const events = {
   /** Runtime preparation before a launch: `{ runtimeId, stage, message }`. */
   prepareProgress: 'dshell://prepare-progress',
   shortcut: 'dshell://shortcut',
+  /** Native tab menu selection: `{ tabId, action }`. */
+  tabMenu: 'dshell://tab-menu',
 } as const;
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -84,6 +86,8 @@ export const api = {
   reorderTabs: (tabIds: string[]) => invoke<void>('reorder_tabs', { tabIds }),
   restartTab: (tabId: string) => invoke<void>('restart_tab', { tabId }),
   reloadTab: (tabId: string) => invoke<void>('reload_tab', { tabId }),
+  showTabMenu: (tabId: string, x: number, y: number) =>
+    invoke<void>('show_tab_menu', { tabId, x, y }),
   clearTabData: (tabId: string) => invoke<void>('clear_tab_data', { tabId }),
   focusChrome: () => invoke<void>('focus_chrome'),
   openInSystemBrowser: (tabId: string) => invoke<void>('open_in_system_browser', { tabId }),

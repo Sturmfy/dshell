@@ -677,6 +677,8 @@ dependencies = [
  "tauri-build",
  "tokio",
  "tokio-util",
+ "webview2-com",
+ "windows-core",
 ]
 
 [[package]]

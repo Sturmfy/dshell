@@ -429,10 +429,50 @@ dshell 无法真的 `@import` 这些样式表：它们加载在另一个 webview
 | 源码 checkout | `git reset --hard` 只对**干净**的 checkout 执行；有本地修改时跳过更新 |
 | 清空实例数据 | 用 `clear_all_browsing_data()`，而不是删目录 |
 
+### 内容页桥（不经过 Tauri IPC）
+
+DSH 的 content tab 仍然**没有任何 Tauri capability**。它在两个可选全局上读取 shell 能力：
+
+- `__DSH_DIRECTORY_PICKER__.pick()` —— 打开 dshell 自己拥有的原生文件夹选择器；
+- `__DSH_HOST_PATHS__.pathFor(file)` —— 返回拖入/选择文件的磁盘路径。
+
+两者由 `src-tauri/src/bridge/content.js` 在文档开始时注入，经 WebView2 的
+`chrome.webview` 消息通道与 `src-tauri/src/bridge/mod.rs` 通信。脚本启动时发
+`ready`，宿主回 `hello`；收不到 `hello` 时 pick 在 1.5 秒内失败，而不是让
+DSH 无声等待。宿主按每个 tab 的 `display_origin` 校验消息来源；不是当前 DSH
+origin 的请求会被拒绝。`hostPaths` 只读取页面已经持有的 `File` 对象对应的
+`ICoreWebView2File::Path`，不接受 JSON 里的任意路径，也不读文件内容。没有 Tauri
+capability，因此内容页即使被导航到外部 origin，也拿不到 dshell 的命令。
+
+`__DSH_HOST_PATHS__` 是尽力而为：路径尚未就绪时返回空串，DSH 按原逻辑上传；
+粘贴文件不经过该桥（仍上传）。
+
+内容 tab 的浏览器行为由同一个 WebView2 入口收紧：
+
+- 内容 tab **只在可编辑控件上保留 WebView2 右键菜单**（输入框/文本域/
+  `contenteditable`）；页面空白、链接、图片等位置由
+  `ContextMenuRequested` 直接 `SetHandled(true)`，不弹浏览器菜单。可编辑区域
+  的菜单再过滤掉 Back / Forward / Print。
+- dshell 自己的 chrome 和 page tab 不需要浏览器菜单，默认右键菜单关闭。
+- 选项卡右键改为 dshell 风格的 **Tauri 弹出窗口**（`menu.html`），位置跟随
+  鼠标、失焦/点击外部关闭；不再受 chrome webview 38px 高度限制，也跨平台可用。
+- `NavigationStarting` 读取 `NavigationKind`，取消 `BackOrForward`，覆盖鼠标
+  侧键、`Alt+Left/Right` 和任何走浏览器历史的后退/前进。
+- `Ctrl+P` 在 `AcceleratorKeyPressed` 中吞掉；**刷新和查找保留**（不关闭
+  `AreBrowserAcceleratorKeysEnabled`）。
+- 缩放、触摸板滑动、状态栏、release 的 DevTools 仍由 Wry 默认关闭。
+
 ---
 
 ## 10. 已知限制
 
+- **内容页桥是尽力而为的**：`__DSH_HOST_PATHS__` 依赖 WebView2 把 DOM `File`
+  映射回磁盘路径。拖入/选择的文件可用；粘贴文件不经过桥，仍上传；文件夹是否
+  可用取决于 WebView2 是否把目录 `File` 当作磁盘项（不保证）。路径没就绪时
+  DSH 按原逻辑上传，不会阻塞输入。
+- **内容页桥 attach 失败时**只写 debug log：标签页继续工作，`pick` 在 1.5 秒内
+  报“bridge unavailable”，`hostPaths` 按无路径上传；不会给 `tab-*` 增加 Tauri
+  capability，也不会阻断标签页创建。
 - **快捷键需要 dshell 自己的界面有焦点**（选项卡条，或某个 dshell 页面选项卡）。
   焦点在 DSH 内容区时，`Ctrl+T` 之类会被 DSH 页面自己接收。设计文档建议的
   "隐藏窗口菜单加速键"在 Tauri 2 的 Windows 实现里没有可靠路径，因此本版**不声称**

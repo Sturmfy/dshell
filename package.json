@@ -13,6 +13,7 @@
     "binary": "node tools/package-binary.mjs",
     "app": "node tools/cargo.mjs run",
     "test": "node tools/cargo.mjs test",
+    "test:bridge": "node --test tools/content-bridge.test.mjs",
     "check": "node tools/cargo.mjs clippy --all-targets -- -D warnings",
     "probe": "node tools/dsh-contract-probe.mjs"
   },

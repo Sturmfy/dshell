@@ -22,6 +22,9 @@
 //! | [`runtime`] | the four backends: npx, npm, managed tree, arbitrary binary |
 //! | [`dsh`] | launch-URL parsing, process supervision, credential-free probing |
 //! | [`tabs`] | the **only** module allowed to touch multi-webview APIs |
+//! | [`bridge`] | the narrow WebView2 message bridge injected into content tabs |
+//! | [`picker`] | window-owned native directory/file pickers |
+//! | [`webview_settings`] | WebView2 policy for dshell's own chrome and page tabs |
 //! | [`commands`] | the `invoke` surface (all `async`) |
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -31,16 +34,19 @@
 // it would only move the cost and obscure the API.
 #![allow(clippy::result_large_err)]
 
+pub mod bridge;
 pub mod commands;
 pub mod config;
 pub mod dialog;
 pub mod dsh;
 pub mod env;
 pub mod error;
+pub mod picker;
 pub mod root;
 pub mod runtime;
 pub mod state;
 pub mod tabs;
+pub mod webview_settings;
 pub mod win;
 
 use std::path::{Path, PathBuf};
@@ -56,6 +62,9 @@ use crate::tabs::manager::{TabManager, CHROME_LABEL};
 use crate::tabs::state::ConnectionKind;
 
 pub const MAIN_WINDOW: &str = "main";
+
+/// The strip handles the menu action after the native popup closes.
+pub const TAB_MENU_EVENT: &str = "dshell://tab-menu";
 
 /// Marker whose presence at startup means the previous run did not reach a clean
 /// exit. Written when the app boots, removed by the exit hook in [`main`].
@@ -94,6 +103,8 @@ pub fn main() {
             commands::reorder_tabs,
             commands::restart_tab,
             commands::reload_tab,
+            commands::show_tab_menu,
+            commands::tab_menu_choose,
             commands::clear_tab_data,
             commands::focus_chrome,
             commands::open_in_system_browser,
@@ -175,13 +186,14 @@ fn setup_app(
     let bar = tabs::layout::TAB_BAR_HEIGHT;
 
     // The chrome webview is dshell's own UI and the only holder of IPC access.
-    window.add_child(
+    let chrome = window.add_child(
         WebviewBuilder::new(CHROME_LABEL, WebviewUrl::App("index.html".into()))
             .data_directory(data_root.webview_data_dir().join("chrome"))
             .disable_drag_drop_handler(),
         LogicalPosition::new(0.0, 0.0),
         LogicalSize::new(width, bar),
     )?;
+    webview_settings::disable_context_menu(&chrome);
 
     let manager = Arc::new(TabManager::new(window.clone(), handle.clone()));
     {

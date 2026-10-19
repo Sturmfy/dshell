@@ -20,6 +20,14 @@ serde_json = "1"
 tokio = { version = "1", features = ["process", "rt", "rt-multi-thread", "macros", "time", "io-util", "sync", "net"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 
+[target.'cfg(windows)'.dependencies]
+# The content bridge talks to WebView2 directly so the DSH tabs never gain a
+# Tauri capability (see `src/bridge`). These versions are pinned to the exact
+# ones Tauri 2.12.3 / wry 0.57 already resolve; mixing WebView2 COM crates across
+# versions produces incompatible interface types.
+webview2-com = "=0.39.1"
+windows-core = "=0.62.2"
+
 [profile.release]
 codegen-units = 1
 lto = true

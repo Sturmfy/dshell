@@ -25,6 +25,9 @@ pub struct AppState {
     /// Serialises "install pnpm": two of dshell's pages can offer the button, and
     /// two concurrent global npm installs would fight over npm's own lock.
     pub pnpm_install: Mutex<()>,
+    /// Serialises the owned native pickers. A second picker has nowhere to show
+    /// a waiting state, so it fails with a readable busy error instead.
+    pub picker_lock: Mutex<()>,
     /// Serialises runtime preparation: one npx download or git clone at a time.
     pub prepare: Mutex<()>,
     /// Registry dist-tags, cached for a few minutes. The only value in this
@@ -47,6 +50,7 @@ impl AppState {
             node: Mutex::new(None),
             environment: Mutex::new(None),
             pnpm_install: Mutex::new(()),
+            picker_lock: Mutex::new(()),
             prepare: Mutex::new(()),
             dist_tags: Mutex::new(None),
             tabs_file,
