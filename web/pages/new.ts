@@ -53,6 +53,7 @@ import {
   pageFooter,
   pageFrame,
   pageHeader,
+  preserveView,
   row,
   section,
   selectableCard,
@@ -125,7 +126,15 @@ const STEP_LABELS = ['选择方式', '详细设置'];
 
 // -------------------------------------------------------------------- render
 
-function render(): void {
+/**
+ * Build the page from the store.
+ *
+ * `render` adds [`preserveView`], because almost everything that repaints this
+ * page — a rescan, an error, a modal opening or closing, a toast timing out —
+ * happens *on* the step the user is already reading. Only a step change is a new
+ * screen, and it calls `renderStep` to start at the top.
+ */
+function paint(): void {
   const info = store.state.info;
   if (!info) {
     host.innerHTML = '';
@@ -158,6 +167,19 @@ function render(): void {
     const toast = toastView(store);
     if (toast) host.appendChild(toast);
   }
+}
+
+/** Repaint the current step, keeping the reader where they are. */
+const render = (): void => preserveView(paint);
+
+/**
+ * Go to a different step.
+ *
+ * `paint` builds a fresh scroll column, so the step opens at its top — which is
+ * exactly what a repaint of the current step must not do.
+ */
+function renderStep(): void {
+  paint();
 }
 
 /**
@@ -405,7 +427,7 @@ async function advanceKind(): Promise<void> {
   if (!kind) return;
   state.step = kind;
   state.error = null;
-  render();
+  renderStep();
   if (kind === 'local') await refreshStatus(true);
   else await rescan();
 }
@@ -413,7 +435,7 @@ async function advanceKind(): Promise<void> {
 function backToKind(): void {
   state.step = 'kind';
   state.error = null;
-  render();
+  renderStep();
 }
 
 // --------------------------------------------------------------- step two

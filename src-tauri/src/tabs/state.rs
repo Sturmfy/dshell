@@ -105,6 +105,10 @@ fn default_true() -> bool {
 pub struct TabSpec {
     pub id: String,
     pub title: String,
+    /// A name the user chose. While this is set, a DSH page title is evidence
+    /// of the active session, not the tab's name, and must not replace it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_title: Option<String>,
     /// The field name is kept as `connection` so a `tabs.json` written by an
     /// earlier build still parses — tabs are the user's session, and losing them
     /// to a rename would be a silly way to break the app.
@@ -135,7 +139,11 @@ pub enum ConnectionKind {
         dsh_home: DshHomeSetting,
         /// `None` means "follow the configured default", which is itself
         /// "unset" unless the user changed it.
-        #[serde(rename = "dshAgentsHome", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "dshAgentsHome",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         dsh_agents_home: Option<DshHomeSetting>,
         runtime: RuntimeSpec,
         #[serde(rename = "killOnClose", default)]
@@ -175,7 +183,13 @@ impl ConnectionKind {
     }
 
     pub fn is_plaintext_remote(&self) -> bool {
-        matches!(self, ConnectionKind::Remote { allow_plaintext: true, .. })
+        matches!(
+            self,
+            ConnectionKind::Remote {
+                allow_plaintext: true,
+                ..
+            }
+        )
     }
 
     /// The working directory the user chose, if any. `None` means "let DSH
@@ -199,6 +213,54 @@ pub mod phase {
     pub const FAILED: &str = "failed";
     pub const EXITED: &str = "exited";
     pub const NEEDS_TOKEN: &str = "needsToken";
+}
+
+/// The strongest unacknowledged session state in a tab.
+///
+/// Plain strings for the same reason [`phase`] uses them: the strip's classes
+/// and the tooltip are a public contract, not a serde spelling.
+pub mod attention {
+    pub const ERROR: &str = "error";
+    pub const NEEDS_INPUT: &str = "needsInput";
+    pub const COMPLETED: &str = "completed";
+}
+
+/// Session status counts reported by the DSH page that owns a tab.
+///
+/// DSH marks a session's own row: red for an error, amber while the agent waits
+/// for approval/plan review/a question, green for "finished while you were not
+/// looking" (`completionUnread`). Only those unacknowledged states count here;
+/// `running` is carried so the manager can notice a background run finishing
+/// even when the finished session is the one currently selected in DSH.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAttention {
+    #[serde(default)]
+    pub error: u32,
+    #[serde(default, rename = "needsInput")]
+    pub needs_input: u32,
+    #[serde(default)]
+    pub completed: u32,
+    #[serde(default)]
+    pub running: u32,
+}
+
+impl SessionAttention {
+    pub fn level(&self) -> Option<&'static str> {
+        if self.error > 0 {
+            Some(attention::ERROR)
+        } else if self.needs_input > 0 {
+            Some(attention::NEEDS_INPUT)
+        } else if self.completed > 0 {
+            Some(attention::COMPLETED)
+        } else {
+            None
+        }
+    }
+
+    pub fn has_activity(&self) -> bool {
+        self.error > 0 || self.needs_input > 0 || self.completed > 0 || self.running > 0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +300,13 @@ pub struct TabView {
     pub notice: Option<String>,
     #[serde(default)]
     pub plaintext: bool,
+    /// The strongest unacknowledged session state: `error`, `needsInput` or
+    /// `completed`; `None` means the tab is not asking for attention.
+    #[serde(default)]
+    pub attention: Option<String>,
+    /// What the page last reported, including running sessions.
+    #[serde(default)]
+    pub attention_counts: Option<SessionAttention>,
     #[serde(default)]
     pub has_session_cookie: bool,
     #[serde(default)]
@@ -268,6 +337,11 @@ pub struct TabRuntime {
     pub exit_code: Option<i32>,
     pub started_at: Option<std::time::Instant>,
     pub last_title: Option<String>,
+    /// Latest aggregate the DSH page reported.
+    pub attention_counts: SessionAttention,
+    /// A run finished while this tab was not active and nothing else has asked
+    /// for attention since. Activating the tab acknowledges it.
+    pub finished_unread: bool,
     pub has_session_cookie: bool,
     /// The resolved spawn command line, for the diagnostics panel.
     pub command_line: Option<String>,
@@ -289,6 +363,8 @@ impl TabRuntime {
             exit_code: None,
             started_at: None,
             last_title: None,
+            attention_counts: SessionAttention::default(),
+            finished_unread: false,
             has_session_cookie: false,
             command_line: None,
             generation: 0,
@@ -316,6 +392,7 @@ mod tests {
         TabSpec {
             id: "p1".into(),
             title: kind.title().into(),
+            custom_title: None,
             connection: ConnectionKind::Page { kind },
             display_origin: None,
         }
@@ -428,14 +505,76 @@ mod tests {
         assert_eq!(PageKind::parse(""), None);
     }
 
+    /// Pending interaction and errors outrank a finished background run, and a
+    /// tab with neither reports no attention at all.
+    #[test]
+    fn session_attention_priority_is_error_input_completed() {
+        assert_eq!(SessionAttention::default().level(), None);
+        assert_eq!(
+            SessionAttention {
+                completed: 1,
+                ..Default::default()
+            }
+            .level(),
+            Some(attention::COMPLETED)
+        );
+        assert_eq!(
+            SessionAttention {
+                completed: 1,
+                needs_input: 1,
+                ..Default::default()
+            }
+            .level(),
+            Some(attention::NEEDS_INPUT)
+        );
+        assert_eq!(
+            SessionAttention {
+                completed: 1,
+                needs_input: 1,
+                error: 1,
+                ..Default::default()
+            }
+            .level(),
+            Some(attention::ERROR)
+        );
+        // Running alone is not attention: a working session is not a request
+        // for the user to come back.
+        assert_eq!(
+            SessionAttention {
+                running: 2,
+                ..Default::default()
+            }
+            .level(),
+            None
+        );
+        assert!(SessionAttention {
+            running: 1,
+            ..Default::default()
+        }
+        .has_activity());
+    }
+
+    /// The wire form is what the content script posts; `needsInput` must not
+    /// arrive as `needs_input` and silently count as zero.
+    #[test]
+    fn session_attention_uses_the_page_wire_names() {
+        let parsed: SessionAttention =
+            serde_json::from_str(r#"{"error":0,"needsInput":2,"completed":1,"running":0}"#)
+                .unwrap();
+        assert_eq!(parsed.needs_input, 2);
+        assert_eq!(parsed.level(), Some(attention::NEEDS_INPUT));
+
+        let wire = serde_json::to_string(&parsed).unwrap();
+        assert!(wire.contains("\"needsInput\":2"));
+    }
+
     /// `TabView::closable` defaults to true so an older payload (or a hand-built
     /// one) can never accidentally pin every tab.
     #[test]
     fn tab_view_defaults_to_closable() {
-        let view: TabView = serde_json::from_str(
-            r#"{"id":"a","title":"t","badge":"local","phase":"idle"}"#,
-        )
-        .unwrap();
+        let view: TabView =
+            serde_json::from_str(r#"{"id":"a","title":"t","badge":"local","phase":"idle"}"#)
+                .unwrap();
         assert!(view.closable);
         assert_eq!(view.page_kind, None);
     }

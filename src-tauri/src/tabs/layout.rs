@@ -38,7 +38,12 @@ pub struct Bounds {
 
 impl Bounds {
     pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -70,14 +75,33 @@ pub fn content_bounds(window_width: f64, window_height: f64) -> Bounds {
     )
 }
 
+/// The narrowest, shortest parked viewport that keeps DSH's session rows mounted.
+///
+/// DSH auto-collapses its sidebar below a 1024px viewport, and the collapsed
+/// rail does not render session rows at all. A 1×1 parked webview therefore
+/// destroyed exactly the evidence a background tab has to report: a session
+/// that finished, or one that started waiting for the user. Width must stay at
+/// or above the breakpoint; height is kept at one pixel so an offscreen page
+/// barely rasterizes while its React tree — and the rows this app observes —
+/// stays mounted.
+const PARKED_MIN_WIDTH: f64 = 1024.0;
+const PARKED_MIN_HEIGHT: f64 = 1.0;
+
 /// Where parked content webviews go.
 ///
 /// Not `hide()` and not a zero size: a hidden webview is a candidate for
 /// background throttling, and DSH is a long-lived SSE session where a stalled
 /// stream means a stuck approval prompt. Moving it out of the visible area keeps
-/// the page alive and makes switching instant.
-pub fn parked_bounds(window_width: f64) -> Bounds {
-    Bounds::new(-OFFSCREEN_FACTOR * window_width.max(800.0), 0.0, 1.0, 1.0)
+/// the page alive and makes switching instant. Width is deliberately at DSH's
+/// sidebar breakpoint — see [`PARKED_MIN_WIDTH`].
+pub fn parked_bounds(window_width: f64, _window_height: f64) -> Bounds {
+    let width = PARKED_MIN_WIDTH;
+    Bounds::new(
+        -OFFSCREEN_FACTOR * window_width.max(800.0) - width,
+        0.0,
+        width,
+        PARKED_MIN_HEIGHT,
+    )
 }
 
 #[cfg(test)]
@@ -106,13 +130,18 @@ mod tests {
     fn nothing_ever_overlaps_the_tab_strip() {
         let chrome = chrome_bounds(W);
         assert!(!chrome.overlaps(&content_bounds(W, H)));
-        assert!(!chrome.overlaps(&parked_bounds(W)));
+        assert!(!chrome.overlaps(&parked_bounds(W, H)));
     }
 
     #[test]
-    fn parked_views_are_far_out_of_sight() {
-        let parked = parked_bounds(W);
+    fn parked_views_are_far_out_of_sight_and_stay_wide_enough_for_dsh() {
+        let parked = parked_bounds(W, H);
         assert!(parked.x <= -2400.0);
+        assert!(
+            parked.width >= 1024.0,
+            "DSH collapses its session rows below 1024px"
+        );
+        assert!(parked.height >= 1.0);
         assert!(!parked.overlaps(&chrome_bounds(W)));
         assert!(!parked.overlaps(&content_bounds(W, H)));
     }

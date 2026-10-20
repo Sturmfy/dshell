@@ -29,11 +29,17 @@ function boot(options = {}) {
     className: '',
     getBoundingClientRect: () => ({ x: 0, y: 0, width: 1280, height: 800 }),
   }
+  const brand = options.brand
+  const sessionRows = options.rows ?? []
   const document = {
     readyState: 'complete',
     body,
     documentElement: body,
-    querySelectorAll: () => [],
+    querySelectorAll(selector) {
+      if (selector === '[class*="brandName" i]') return brand ? [brand] : []
+      if (selector === '[data-row-key^="session:"]') return sessionRows
+      return []
+    },
     elementsFromPoint: () => [],
     addEventListener(type, listener) {
       documentListeners.push({ type, listener })
@@ -71,7 +77,15 @@ function boot(options = {}) {
   // The real host answers the script's `ready` with `hello`; tests do the same
   // before exercising picker promises.
   if (messages.some(message => message.type === 'ready')) {
-    for (const listener of listeners) listener({ data: { v: 1, type: 'hello' } })
+    for (const listener of listeners) {
+      listener({
+        data: {
+          v: 1,
+          type: 'hello',
+          ...(options.title === undefined ? {} : { title: options.title }),
+        },
+      })
+    }
   }
   return {
     window,
@@ -91,6 +105,34 @@ function boot(options = {}) {
 
 function file(name, content = 'x') {
   return new File([content], name, { lastModified: 1 })
+}
+
+function brandElement(text = 'DSH 本地构建') {
+  const attributes = {}
+  return {
+    textContent: text,
+    innerHTML: `<span>${text}</span>`,
+    style: {},
+    setAttribute(name, value) {
+      attributes[name] = value
+    },
+    getAttribute(name) {
+      return attributes[name]
+    },
+  }
+}
+
+function sessionRow(state) {
+  const dot = {
+    getAttribute(name) {
+      return name === 'data-state' ? state : null
+    },
+  }
+  return {
+    querySelector(selector) {
+      return selector === '[data-state]' ? dot : null
+    },
+  }
 }
 
 test('defines both globals and picks a directory through the message channel', async () => {
@@ -159,6 +201,34 @@ test('reports the sidebar surface for the strip', () => {
   assert.equal(theme.background, 'rgb(21, 21, 23)')
   assert.equal(theme.foreground, 'rgb(249, 250, 251)')
   assert.equal(theme.mode, 'dark')
+})
+
+test('paints the custom name over the DSH brand and follows later renames', () => {
+  const brand = brandElement()
+  const bridge = boot({ brand, title: '我的工作台' })
+  assert.equal(brand.textContent, '我的工作台')
+
+  bridge.emit({ v: 1, type: 'title', title: '另一个名字' })
+  assert.equal(brand.textContent, '另一个名字')
+})
+
+test('reports the session-row attention counts to the host', () => {
+  const bridge = boot({
+    rows: [
+      sessionRow('warning'),
+      sessionRow('warning'),
+      sessionRow('done'),
+      sessionRow('ongoing'),
+      sessionRow('idle'),
+    ],
+  })
+  const attention = bridge.messages.filter(message => message.type === 'sessionAttention').pop()
+  assert.ok(attention, 'a sessionAttention message was posted')
+  assert.equal(attention.v, 1)
+  assert.equal(attention.needsInput, 2)
+  assert.equal(attention.completed, 1)
+  assert.equal(attention.running, 1)
+  assert.equal(attention.error, 0)
 })
 
 test('ignores messages from another protocol version', async () => {

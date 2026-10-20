@@ -119,6 +119,138 @@ export function pnpmInstallHint(env: EnvironmentSnapshot): HTMLElement | null {
   return h('p', { class: 'field__hint', text: `将运行：${command}（会写入 npm 的全局前缀）` });
 }
 
+/** One rebuildable scroll box: where it sat, and what it looked like. */
+interface ScrollSnapshot {
+  /** Child indexes from `#page` to the element, stable across a repaint. */
+  path: number[];
+  /** The element's identity, so a removed row cannot be mistaken for its neighbour. */
+  shape: string;
+  top: number;
+  left: number;
+}
+
+/** The control that had focus, and its caret when it has one. */
+interface FocusSnapshot {
+  path: number[];
+  shape: string;
+  start: number | null;
+  end: number | null;
+}
+
+function indexPath(root: Element, node: Element): number[] | null {
+  const path: number[] = [];
+  let current: Element | null = node;
+  while (current && current !== root) {
+    const parent: Element | null = current.parentElement;
+    if (!parent) return null;
+    path.unshift(Array.prototype.indexOf.call(parent.children, current));
+    current = parent;
+  }
+  return current === root ? path : null;
+}
+
+function nodeAtPath(root: Element, path: readonly number[]): Element | null {
+  let node: Element | null = root;
+  for (const index of path) {
+    node = node.children[index] ?? null;
+    if (!node) return null;
+  }
+  return node;
+}
+
+/**
+ * What an element *is*, as opposed to where it is.
+ *
+ * A repaint rebuilds the same controls, so a path is enough to find them again;
+ * the shape is what keeps that from being false when a row was removed and the
+ * element that moved into its place is a different control. Text only counts
+ * for leaf nodes: a container's text is its whole subtree, which changes on a
+ * perfectly ordinary repaint (`page__scroll` is the one that matters here).
+ */
+function shapeOf(node: Element): string {
+  const text = node.childElementCount === 0 ? (node.textContent ?? '').trim().slice(0, 40) : '';
+  return [
+    node.tagName,
+    node.getAttribute('class') ?? '',
+    node.getAttribute('type') ?? '',
+    text,
+  ].join('\u0000');
+}
+
+function isTextControl(node: Element): node is HTMLInputElement | HTMLTextAreaElement {
+  return node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement;
+}
+
+/**
+ * Repaint a page without moving the user.
+ *
+ * Every page here is a plain function of the store, so a change rebuilds the
+ * whole document: `pageFrame` throws the scroll column away and builds a new
+ * one, and every control is a fresh node. That is what keeps a page simple, but
+ * it also means a repaint that the user did *not* ask for — saving a preference,
+ * a toast expiring, a tab event arriving — used to snap a half-scrolled page
+ * back to the top and drop focus out of the control under the cursor.
+ *
+ * So the page's `render` goes through this: remember every scroll box and the
+ * focused control, repaint, put both back. A page's *step change* is the one
+ * thing that should start at the top, and says so by calling its paint function
+ * directly (see `renderStep` in the page modules).
+ */
+export function preserveView(render: () => void): void {
+  const host = document.getElementById('page');
+  if (!host) {
+    render();
+    return;
+  }
+
+  const scrolls: ScrollSnapshot[] = [];
+  for (const element of host.querySelectorAll<HTMLElement>('*')) {
+    if (element.scrollTop === 0 && element.scrollLeft === 0) continue;
+    const path = indexPath(host, element);
+    if (!path) continue;
+    scrolls.push({
+      path,
+      shape: shapeOf(element),
+      top: element.scrollTop,
+      left: element.scrollLeft,
+    });
+  }
+
+  let focus: FocusSnapshot | null = null;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== host && host.contains(active)) {
+    const path = indexPath(host, active);
+    if (path) {
+      focus = {
+        path,
+        shape: shapeOf(active),
+        start: isTextControl(active) ? active.selectionStart : null,
+        end: isTextControl(active) ? active.selectionEnd : null,
+      };
+    }
+  }
+
+  render();
+
+  for (const saved of scrolls) {
+    const node = nodeAtPath(host, saved.path);
+    if (!(node instanceof HTMLElement) || shapeOf(node) !== saved.shape) continue;
+    node.scrollTop = saved.top;
+    node.scrollLeft = saved.left;
+  }
+
+  if (focus) {
+    const node = nodeAtPath(host, focus.path);
+    if (node instanceof HTMLElement && shapeOf(node) === focus.shape) {
+      // The position was restored above; focusing must not undo it.
+      node.focus({ preventScroll: true });
+      if (isTextControl(node) && focus.start !== null) {
+        node.setSelectionRange(focus.start, focus.end ?? focus.start);
+      }
+    }
+  }
+}
+
 /**
  * The scrolling column of a page, with its fixed frame.
  *
@@ -333,12 +465,14 @@ export function toastView(store: Store): HTMLElement | null {
 /**
  * Start a page tab, and make a failed start-up legible.
  *
- * Every page begins the same way: subscribe, load state, render. The part worth
- * centralising is the failure path — a page whose `invoke` is refused (wrong
- * capability, unexpected origin) otherwise renders its static skeleton forever
- * and looks exactly like a slow load. Here it says so on screen and reports the
- * browser's own message to Rust, so the reason is in the debug log rather than
- * guessed at.
+ * Every page begins the same way: subscribe, load state, render. `render` is the
+ * page's repaint-in-place — each page's own `render` goes through
+ * [`preserveView`] — so the subscription below never moves a reader who is
+ * halfway down a long page. The part worth centralising is the failure path — a
+ * page whose `invoke` is refused (wrong capability, unexpected origin) otherwise
+ * renders its static skeleton forever and looks exactly like a slow load. Here
+ * it says so on screen and reports the browser's own message to Rust, so the
+ * reason is in the debug log rather than guessed at.
  */
 export async function bootPage(store: PageStore, render: () => void): Promise<void> {
   const host = document.getElementById('page');

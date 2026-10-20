@@ -26,6 +26,7 @@ import {
   pageHeader,
   pnpmCheckRow,
   pnpmInstallHint,
+  preserveView,
   section,
   toastView,
   wideRow,
@@ -45,7 +46,14 @@ const STEP_LABELS = ['数据位置', '环境检查'];
 
 // -------------------------------------------------------------------- render
 
-function render(): void {
+/**
+ * Build the page from the store.
+ *
+ * `render` adds [`preserveView`] so a refresh of the environment report — a
+ * re-detect, a pnpm install, a toast — does not scroll the wizard back to the
+ * top; `renderStep` is the one thing that deliberately does.
+ */
+function paint(): void {
   const info = store.state.info;
   if (!info) {
     host.innerHTML = '';
@@ -71,6 +79,19 @@ function render(): void {
 
   const toast = toastView(store);
   if (toast) host.appendChild(toast);
+}
+
+/** Repaint the current step, keeping the reader where they are. */
+const render = (): void => preserveView(paint);
+
+/**
+ * Move to another step.
+ *
+ * `paint` builds a fresh scroll column, so the new step starts at its top. That
+ * is the opposite of what a repaint of the *same* step must do.
+ */
+function renderStep(): void {
+  paint();
 }
 
 function stepper(): HTMLElement {
@@ -119,7 +140,7 @@ function renderFooter(info: AppInfo): void {
       text: '返回',
       onclick: () => {
         state.step = 0;
-        render();
+        renderStep();
       },
     }),
     h('button', { class: 'page__foot-spacer' }),
@@ -223,7 +244,7 @@ async function advance(): Promise<void> {
   }
   state.error = null;
   state.step = 1;
-  render();
+  renderStep();
 }
 
 function appendEnvironmentStep(main: HTMLElement, info: AppInfo): void {

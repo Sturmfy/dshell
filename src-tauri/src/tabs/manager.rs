@@ -129,7 +129,12 @@ impl TabManager {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let counter = TAB_COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!("{:x}{:x}{:x}", nanos & 0xffff_ffff, std::process::id(), counter)
+        format!(
+            "{:x}{:x}{:x}",
+            nanos & 0xffff_ffff,
+            std::process::id(),
+            counter
+        )
     }
 
     pub fn webview_label(id: &str) -> String {
@@ -166,12 +171,14 @@ impl TabManager {
             let bounds = if active == Some(entry.id()) {
                 layout::content_bounds(width, height)
             } else {
-                layout::parked_bounds(width)
+                layout::parked_bounds(width, height)
             };
             let _ = entry
                 .webview
                 .set_position(LogicalPosition::new(bounds.x, bounds.y));
-            let _ = entry.webview.set_size(LogicalSize::new(bounds.width, bounds.height));
+            let _ = entry
+                .webview
+                .set_size(LogicalSize::new(bounds.width, bounds.height));
         }
     }
 
@@ -180,7 +187,9 @@ impl TabManager {
     /// and a missed frame is harmless because the next resize fixes it.
     pub fn relayout(&self) {
         let active = self.active.try_lock().ok().and_then(|guard| guard.clone());
-        let Ok(entries) = self.tabs.try_lock() else { return };
+        let Ok(entries) = self.tabs.try_lock() else {
+            return;
+        };
         self.apply_bounds(&entries, active.as_deref());
     }
 
@@ -274,11 +283,13 @@ impl TabManager {
         let id = spec.id.clone();
         // Page tabs are dshell's own documents and must never get the content
         // bridge; only a DSH tab has a page that reads its globals.
+        let custom_title = spec.custom_title.clone();
         let bridge = if spec.connection.page().is_none() {
             match ContentBridge::attach(
                 self.app.clone(),
                 &webview,
                 Self::webview_label(&id),
+                custom_title,
             ) {
                 Ok(bridge) => Some(bridge),
                 Err(err) => {
@@ -333,12 +344,30 @@ impl TabManager {
     /// user kept the system default) — `AppState` computes it from the data root.
     pub async fn open_tab(
         &self,
-        spec: TabSpec,
+        mut spec: TabSpec,
         instance_home: Option<String>,
     ) -> Result<String, Failure> {
         let id = spec.id.clone();
         let label = Self::webview_label(&id);
         let (instance_key, base_dir) = instance_identity(&spec, &self.app);
+        // A name the user chose belongs to the *instance*, not to one tab:
+        // restoring a tab, reconnecting from history, or starting a second tab
+        // for the same workspace all have to pick it back up. An explicit
+        // `custom_title` on the incoming spec wins, because that is a name the
+        // user just typed for this tab.
+        if spec.custom_title.is_none() {
+            if let Some(state) = self.app.try_state::<Arc<crate::AppState>>() {
+                let saved = state
+                    .config_snapshot()
+                    .await
+                    .tab_name(&instance_key)
+                    .map(str::to_string);
+                if let Some(saved) = saved {
+                    spec.title = saved.clone();
+                    spec.custom_title = Some(saved);
+                }
+            }
+        }
         let data_dir = self.claim_data_dir(&id, base_dir).await;
 
         let app_for_title = self.app.clone();
@@ -402,10 +431,7 @@ impl TabManager {
                         // a tab to "正在启动 DSH…".
                         let app = app_for_title.clone();
                         let tab_id = webview.label().trim_start_matches("tab-").to_string();
-                        let page_url = webview
-                            .url()
-                            .map(|url| url.to_string())
-                            .unwrap_or_default();
+                        let page_url = webview.url().map(|url| url.to_string()).unwrap_or_default();
                         tauri::async_runtime::spawn(async move {
                             if let Some(state) = app.try_state::<Arc<crate::AppState>>() {
                                 state
@@ -432,10 +458,11 @@ impl TabManager {
                 LogicalSize::new(1.0, 1.0),
             )
             .map_err(|err| {
-                Failure::new(FailureCode::Internal, format!("创建 webview 失败：{err}")).with_detail(
-                    "这通常意味着 WebView2 运行时不可用或已损坏。\
+                Failure::new(FailureCode::Internal, format!("创建 webview 失败：{err}"))
+                    .with_detail(
+                        "这通常意味着 WebView2 运行时不可用或已损坏。\
                      可在 https://developer.microsoft.com/microsoft-edge/webview2/ 安装。",
-                )
+                    )
             })?;
 
         Ok(self
@@ -468,7 +495,12 @@ impl TabManager {
         let base_dir = self
             .app
             .try_state::<Arc<crate::AppState>>()
-            .map(|state| state.data_root.webview_data_dir().join(format!("page-{}", kind.slug())))
+            .map(|state| {
+                state
+                    .data_root
+                    .webview_data_dir()
+                    .join(format!("page-{}", kind.slug()))
+            })
             .unwrap_or_else(|| PathBuf::from(format!("page-{}", kind.slug())));
         let data_dir = self.claim_data_dir(&id, base_dir).await;
 
@@ -493,6 +525,7 @@ impl TabManager {
         let spec = TabSpec {
             id: id.clone(),
             title: kind.title().to_string(),
+            custom_title: None,
             connection: ConnectionKind::Page { kind },
             display_origin: None,
         };
@@ -531,11 +564,10 @@ impl TabManager {
     /// unfinished first-run wizard (see [`PageKind::closable`]).
     pub async fn close_tab(&self, id: &str) -> Result<(), Failure> {
         if !self.is_closable(id).await {
-            return Err(Failure::new(
-                FailureCode::Internal,
-                "首次配置完成前不能关闭这个选项卡",
-            )
-            .with_detail("它决定 dshell 的数据根位置；完成后即可自由关闭。"));
+            return Err(
+                Failure::new(FailureCode::Internal, "首次配置完成前不能关闭这个选项卡")
+                    .with_detail("它决定 dshell 的数据根位置；完成后即可自由关闭。"),
+            );
         }
         self.remove_tab(id).await
     }
@@ -623,6 +655,15 @@ impl TabManager {
             let mut active = self.active.lock().await;
             *active = id.map(str::to_string);
         }
+        // Showing the tab acknowledges a run that finished while it was in the
+        // background. DSH's own per-session unread dot is separate and stays
+        // until the session row itself is opened.
+        if let Some(id) = id {
+            let mut tabs = self.tabs.lock().await;
+            if let Some(entry) = tabs.get_mut(id) {
+                entry.runtime.finished_unread = false;
+            }
+        }
         {
             let entries = self.tabs.lock().await;
             self.apply_bounds(&entries, id);
@@ -639,9 +680,20 @@ impl TabManager {
         self.changed().await;
     }
 
-    /// Page titles are fixed; a DSH tab's title follows its session.
+    /// Give a DSH tab a user-chosen name.
+    ///
+    /// The name is stored three places for three different lifetimes: on the
+    /// live tab (immediately), in `tabs.json` (the tab's own restore), and in
+    /// `config.json` under the instance identity (a new tab for the same
+    /// instance, including one opened from connection history). It also
+    /// replaces DSH's top-left brand inside the page. While it exists, page
+    /// titles no longer win — see [`Self::set_title_from_page`].
     pub async fn rename(&self, id: &str, title: &str) -> Result<(), Failure> {
-        {
+        let title: String = title.trim().chars().take(64).collect();
+        if title.is_empty() {
+            return Err(Failure::new(FailureCode::Internal, "名称不能为空"));
+        }
+        let (instance_key, origin, bridge) = {
             let mut tabs = self.tabs.lock().await;
             let entry = tabs
                 .get_mut(id)
@@ -652,9 +704,42 @@ impl TabManager {
                     "dshell 自己的页面不能被重命名",
                 ));
             }
-            entry.runtime.spec.title = title.to_string();
-            // Mark it as user-chosen so the page title stops winning.
-            entry.runtime.last_title = Some(title.to_string());
+            entry.runtime.spec.title = title.clone();
+            entry.runtime.spec.custom_title = Some(title.clone());
+            // The last page title stays recorded, but it is no longer the tab's
+            // name; this marker is what makes the next page title a no-op.
+            entry.runtime.last_title = Some(title.clone());
+            (
+                entry.instance_key.clone(),
+                entry.runtime.spec.display_origin.clone(),
+                entry.bridge.clone(),
+            )
+        };
+        if let Some(bridge) = bridge {
+            bridge.set_title(&title);
+        }
+        if let Some(state) = self.app.try_state::<Arc<crate::AppState>>() {
+            let saved = state
+                .update_config(|config| {
+                    config.remember_tab_name(&instance_key, &title);
+                    if let Some(origin) = &origin {
+                        config.rename_connection_label(origin, &title);
+                    }
+                })
+                .await;
+            match saved {
+                Ok(config) => {
+                    // Pages (the new-connection history cards) keep their own
+                    // store; this is how a rename becomes visible there without
+                    // a reload.
+                    let _ = self.app.emit(crate::CONFIG_CHANGED_EVENT, config);
+                }
+                Err(failure) => {
+                    self.changed_one(id, false).await;
+                    self.persist().await;
+                    return Err(failure.with_defaults());
+                }
+            }
         }
         self.changed_one(id, false).await;
         self.persist().await;
@@ -665,7 +750,8 @@ impl TabManager {
         {
             let tabs = self.tabs.lock().await;
             let mut order = self.order.lock().await;
-            let mut next: Vec<String> = ids.into_iter().filter(|id| tabs.contains_key(id)).collect();
+            let mut next: Vec<String> =
+                ids.into_iter().filter(|id| tabs.contains_key(id)).collect();
             for id in order.iter() {
                 if !next.contains(id) {
                     next.push(id.clone());
@@ -723,10 +809,14 @@ impl TabManager {
     }
 
     pub async fn runtime_value(&self, id: &str) -> Option<RuntimeSpec> {
-        self.tabs.lock().await.get(id).and_then(|entry| match &entry.runtime.spec.connection {
-            ConnectionKind::LocalSpawn { runtime, .. } => Some(runtime.clone()),
-            _ => None,
-        })
+        self.tabs
+            .lock()
+            .await
+            .get(id)
+            .and_then(|entry| match &entry.runtime.spec.connection {
+                ConnectionKind::LocalSpawn { runtime, .. } => Some(runtime.clone()),
+                _ => None,
+            })
     }
 
     pub async fn command_line(&self, id: &str) -> Option<String> {
@@ -766,6 +856,8 @@ impl TabManager {
             entry.runtime.failure = None;
             entry.runtime.exit_code = None;
             entry.runtime.has_session_cookie = false;
+            entry.runtime.attention_counts = Default::default();
+            entry.runtime.finished_unread = false;
             entry.runtime.phase = phase::PREPARING.to_string();
             entry.first_load_seen = false;
             (entry.runtime.spec.clone(), entry.runtime.handle.take())
@@ -831,7 +923,9 @@ impl TabManager {
                 }
                 path
             }
-            None => crate::root::default_workspace().unwrap_or_else(|| state.data_root.path.clone()),
+            None => {
+                crate::root::default_workspace().unwrap_or_else(|| state.data_root.path.clone())
+            }
         };
 
         // DSH_HOME is injected only when the user asked for it. The default is to
@@ -867,7 +961,9 @@ impl TabManager {
         if let Some(home) = &dsh_home_value {
             let path = PathBuf::from(home);
             let target = if path.exists() && !path.is_dir() {
-                path.parent().map(PathBuf::from).unwrap_or_else(|| path.clone())
+                path.parent()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| path.clone())
             } else {
                 path.clone()
             };
@@ -888,7 +984,12 @@ impl TabManager {
 
         let node = state.node().await;
         let cold = matches!(runtime_spec, RuntimeSpec::Npx { .. });
-        let flags = Flags { no_open: true, port: None, host: None, trusted_hosts: Vec::new() };
+        let flags = Flags {
+            no_open: true,
+            port: None,
+            host: None,
+            trusted_hosts: Vec::new(),
+        };
 
         let resolved = runtime::resolve(
             &runtime_spec,
@@ -903,7 +1004,10 @@ impl TabManager {
             Err(failure) => {
                 process::debug_log(
                     &state.data_root.path,
-                    &format!("resolve failed for {}: {failure}", runtime_spec.short_label()),
+                    &format!(
+                        "resolve failed for {}: {failure}",
+                        runtime_spec.short_label()
+                    ),
                 );
                 return self.fail(&id, failure.with_defaults()).await;
             }
@@ -936,7 +1040,11 @@ impl TabManager {
                     .join("logs"),
             ),
             debug_root: state.data_root.path.clone(),
-            ready_timeout: if cold { COLD_START_BUDGET } else { runtime::DEFAULT_PORT_TIMEOUT },
+            ready_timeout: if cold {
+                COLD_START_BUDGET
+            } else {
+                runtime::DEFAULT_PORT_TIMEOUT
+            },
         };
 
         let spawned = match process::spawn_and_supervise(request, tx) {
@@ -945,8 +1053,11 @@ impl TabManager {
                 return self
                     .fail(
                         &id,
-                        Failure::new(FailureCode::NpxInstallFailed, format!("无法启动子进程：{err}"))
-                            .with_detail(command_line),
+                        Failure::new(
+                            FailureCode::NpxInstallFailed,
+                            format!("无法启动子进程：{err}"),
+                        )
+                        .with_detail(command_line),
                     )
                     .await
             }
@@ -977,9 +1088,7 @@ impl TabManager {
         self.changed_one(&id, true).await;
 
         let supervisor = spawned.supervisor;
-        tokio::spawn(async move {
-            run_event_loop(id, generation, rx, supervisor).await
-        });
+        tokio::spawn(async move { run_event_loop(id, generation, rx, supervisor).await });
 
         Ok(())
     }
@@ -1045,24 +1154,35 @@ impl TabManager {
     // -------------------------------------------------------------- navigation
 
     async fn webview_of(&self, id: &str) -> Option<Webview> {
-        self.tabs.lock().await.get(id).map(|entry| entry.webview.clone())
+        self.tabs
+            .lock()
+            .await
+            .get(id)
+            .map(|entry| entry.webview.clone())
     }
 
     pub async fn show_placeholder(&self, id: &str) {
-        let Some(webview) = self.webview_of(id).await else { return };
+        let Some(webview) = self.webview_of(id).await else {
+            return;
+        };
         let url = asset_url(&self.app, &placeholder_path(id), &[]);
         let _ = webview.navigate(url);
     }
 
     async fn show_error_page(&self, id: &str, failure: &Failure) {
-        let Some(webview) = self.webview_of(id).await else { return };
+        let Some(webview) = self.webview_of(id).await else {
+            return;
+        };
         let url = asset_url(
             &self.app,
             CHROME_ERROR,
             &[
                 ("code", format!("{:?}", failure.code)),
                 ("tab", id.to_string()),
-                ("stage", failure.stage.clone().unwrap_or_else(|| "connect".into())),
+                (
+                    "stage",
+                    failure.stage.clone().unwrap_or_else(|| "connect".into()),
+                ),
             ],
         );
         let _ = webview.navigate(url);
@@ -1141,7 +1261,81 @@ impl TabManager {
             if let Some(entry) = tabs.get_mut(id) {
                 if entry.runtime.last_title.as_deref() != Some(title.as_str()) {
                     entry.runtime.last_title = Some(title.clone());
-                    entry.runtime.spec.title = title;
+                    // A user-chosen name is the tab's name; the document title
+                    // still follows the active DSH session and must not replace
+                    // it. This is the difference between "the session changed"
+                    // and "the tab was renamed".
+                    if entry.runtime.spec.custom_title.is_none()
+                        && entry.runtime.spec.title != title
+                    {
+                        entry.runtime.spec.title = title;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.changed_one(id, false).await;
+        }
+    }
+
+    /// Record the aggregate DSH paints on its session rows.
+    ///
+    /// DSH's own green "done" dot only appears for a session that finished
+    /// while it was *not* the selected one. The common case here is the
+    /// opposite: the selected session finishes while its whole tab is in the
+    /// background. That transition is visible as `running > 0 -> 0`, and this
+    /// tab was not the active one, so it becomes an unread completion that the
+    /// next activation acknowledges.
+    pub async fn set_session_attention(
+        &self,
+        id: &str,
+        counts: crate::tabs::state::SessionAttention,
+    ) {
+        let active = self.active_id().await.as_deref() == Some(id);
+        let mut changed = false;
+        {
+            let mut tabs = self.tabs.lock().await;
+            let Some(entry) = tabs.get_mut(id) else {
+                return;
+            };
+            let previous_running = entry.runtime.attention_counts.running;
+            if counts.running > 0 {
+                if entry.runtime.finished_unread {
+                    entry.runtime.finished_unread = false;
+                    changed = true;
+                }
+            } else if previous_running > 0
+                && !active
+                && counts.level().is_none()
+                && !entry.runtime.finished_unread
+            {
+                entry.runtime.finished_unread = true;
+                changed = true;
+            }
+            if active && entry.runtime.finished_unread {
+                entry.runtime.finished_unread = false;
+                changed = true;
+            }
+            if entry.runtime.attention_counts != counts {
+                entry.runtime.attention_counts = counts;
+                changed = true;
+            }
+        }
+        if changed {
+            self.changed_one(id, false).await;
+        }
+    }
+
+    /// Clear attention when a reload/restart makes the old page's report stale.
+    async fn clear_attention(&self, id: &str) {
+        let mut changed = false;
+        {
+            let mut tabs = self.tabs.lock().await;
+            if let Some(entry) = tabs.get_mut(id) {
+                if entry.runtime.attention_counts.has_activity() || entry.runtime.finished_unread {
+                    entry.runtime.attention_counts = Default::default();
+                    entry.runtime.finished_unread = false;
                     changed = true;
                 }
             }
@@ -1161,7 +1355,9 @@ impl TabManager {
     pub async fn probe_session(&self, id: &str) -> bool {
         let (webview, origin) = {
             let tabs = self.tabs.lock().await;
-            let Some(entry) = tabs.get(id) else { return false };
+            let Some(entry) = tabs.get(id) else {
+                return false;
+            };
             let origin = entry
                 .runtime
                 .spec
@@ -1171,9 +1367,15 @@ impl TabManager {
             (entry.webview.clone(), origin)
         };
         let Some(origin) = origin else { return false };
-        let Ok(url) = tauri::Url::parse(&format!("{origin}/")) else { return false };
-        let Ok(cookies) = webview.cookies_for_url(url) else { return false };
-        let has = cookies.iter().any(|cookie| cookie.name().starts_with("dsh-auth-"));
+        let Ok(url) = tauri::Url::parse(&format!("{origin}/")) else {
+            return false;
+        };
+        let Ok(cookies) = webview.cookies_for_url(url) else {
+            return false;
+        };
+        let has = cookies
+            .iter()
+            .any(|cookie| cookie.name().starts_with("dsh-auth-"));
         let mut tabs = self.tabs.lock().await;
         if let Some(entry) = tabs.get_mut(id) {
             entry.runtime.has_session_cookie = has;
@@ -1206,19 +1408,31 @@ impl TabManager {
                 .launch_url
                 .as_ref()
                 .map(|u| u.url.clone())
-                .or_else(|| entry.runtime.spec.display_origin.as_ref().map(|o| format!("{o}/")))
+                .or_else(|| {
+                    entry
+                        .runtime
+                        .spec
+                        .display_origin
+                        .as_ref()
+                        .map(|o| format!("{o}/"))
+                })
         };
         let Some(url) = url else {
-            return Err(Failure::new(FailureCode::Internal, "该选项卡还没有可用的地址"));
+            return Err(Failure::new(
+                FailureCode::Internal,
+                "该选项卡还没有可用的地址",
+            ));
         };
-        crate::shell_open(&url)
-            .map_err(|err| Failure::new(FailureCode::Internal, format!("无法打开系统浏览器：{err}")))
+        crate::shell_open(&url).map_err(|err| {
+            Failure::new(FailureCode::Internal, format!("无法打开系统浏览器：{err}"))
+        })
     }
 
     pub async fn reload(&self, id: &str) -> Result<(), Failure> {
         let Some(webview) = self.webview_of(id).await else {
             return Err(Failure::new(FailureCode::Internal, "选项卡不存在"));
         };
+        self.clear_attention(id).await;
         webview
             .reload()
             .map_err(|err| Failure::new(FailureCode::Internal, format!("重新加载失败：{err}")))
@@ -1279,7 +1493,9 @@ impl TabManager {
     }
 
     pub async fn emit_shortcut(&self, action: &str) {
-        let _ = self.app.emit(SHORTCUT_EVENT, serde_json::json!({ "action": action }));
+        let _ = self
+            .app
+            .emit(SHORTCUT_EVENT, serde_json::json!({ "action": action }));
     }
 
     /// The webview data directory for a tab, so the UI can show and open it.
@@ -1389,14 +1605,20 @@ async fn run_event_loop(
     let mut pending_verification: Option<LaunchUrl> = None;
 
     loop {
-        if pending_verification.is_none() && pending_broadcast
-            && last_broadcast.elapsed() >= LOG_BROADCAST_INTERVAL {
-                pending_broadcast = false;
-                last_broadcast = Instant::now();
-                broadcast_one(&tab_id, false).await;
-            }
+        if pending_verification.is_none()
+            && pending_broadcast
+            && last_broadcast.elapsed() >= LOG_BROADCAST_INTERVAL
+        {
+            pending_broadcast = false;
+            last_broadcast = Instant::now();
+            broadcast_one(&tab_id, false).await;
+        }
 
-        let idle = Duration::from_millis(if pending_verification.is_some() { 10 } else { 400 });
+        let idle = Duration::from_millis(if pending_verification.is_some() {
+            10
+        } else {
+            400
+        });
         let event = tokio::select! {
             event = rx.recv() => event,
             _ = tokio::time::sleep(idle) => {
@@ -1435,11 +1657,7 @@ async fn run_event_loop(
     let _ = supervisor.await;
 }
 
-async fn record_log(
-    tab_id: &str,
-    generation: u64,
-    entry: crate::dsh::process::LogEntry,
-) -> bool {
+async fn record_log(tab_id: &str, generation: u64, entry: crate::dsh::process::LogEntry) -> bool {
     match current_manager() {
         Some(manager) => manager.record_log(tab_id, generation, entry).await,
         None => false,
@@ -1483,8 +1701,11 @@ async fn broadcast_one(tab_id: &str, reset: bool) {
 /// alive — and serves 404. So confirm the UI is actually served before calling
 /// the tab ready.
 async fn verify_and_navigate(tab_id: String, generation: u64, url: LaunchUrl) {
-    let outcome = crate::dsh::probe::verify_ready(&url.origin, &url.url, Duration::from_secs(15)).await;
-    let Some(manager) = current_manager() else { return };
+    let outcome =
+        crate::dsh::probe::verify_ready(&url.origin, &url.url, Duration::from_secs(15)).await;
+    let Some(manager) = current_manager() else {
+        return;
+    };
     if let Some(state) = current_state() {
         process::debug_log(
             &state.data_root.path,
@@ -1546,6 +1767,21 @@ fn build_view(entry: &TabEntry, onboarding_done: bool) -> TabView {
     let runtime = &entry.runtime;
     let spec = &runtime.spec;
     let page = spec.connection.page();
+    // A dead backend outranks anything the last page managed to report, and
+    // `needsToken` is a request for the user just like a pending question.
+    let attention = match runtime.phase.as_str() {
+        phase::FAILED | phase::EXITED => Some(crate::tabs::state::attention::ERROR.to_string()),
+        phase::NEEDS_TOKEN => Some(crate::tabs::state::attention::NEEDS_INPUT.to_string()),
+        _ => runtime
+            .attention_counts
+            .level()
+            .map(str::to_string)
+            .or_else(|| {
+                runtime
+                    .finished_unread
+                    .then(|| crate::tabs::state::attention::COMPLETED.to_string())
+            }),
+    };
 
     TabView {
         id: spec.id.clone(),
@@ -1554,7 +1790,9 @@ fn build_view(entry: &TabEntry, onboarding_done: bool) -> TabView {
         // Only the wizard is ever unclosable, and only while onboarding is
         // unfinished — the same rule `close_tab` enforces, so the strip can never
         // offer a close button Rust refuses (or hide one that would work).
-        closable: page.map(|kind| kind.closable(onboarding_done)).unwrap_or(true),
+        closable: page
+            .map(|kind| kind.closable(onboarding_done))
+            .unwrap_or(true),
         page_kind: page.map(|kind| kind.slug().to_string()),
         phase: runtime.phase.clone(),
         origin: spec.display_origin.clone(),
@@ -1573,6 +1811,8 @@ fn build_view(entry: &TabEntry, onboarding_done: bool) -> TabView {
         failure: runtime.failure.clone(),
         notice: runtime.notice.clone(),
         plaintext: spec.connection.is_plaintext_remote(),
+        attention,
+        attention_counts: Some(runtime.attention_counts),
         has_session_cookie: runtime.has_session_cookie,
         log_path: runtime
             .log_path
@@ -1592,7 +1832,11 @@ fn instance_identity(spec: &TabSpec, app: &AppHandle) -> (String, PathBuf) {
         .unwrap_or_else(|| PathBuf::from("."));
     let key = match &spec.connection {
         ConnectionKind::Page { kind } => format!("page-{}", kind.slug()),
-        ConnectionKind::LocalSpawn { workspace, dsh_home, .. } => {
+        ConnectionKind::LocalSpawn {
+            workspace,
+            dsh_home,
+            ..
+        } => {
             let home = match dsh_home {
                 DshHomeSetting::Custom { path } => Some(PathBuf::from(path)),
                 _ => None,
@@ -1607,9 +1851,11 @@ fn instance_identity(spec: &TabSpec, app: &AppHandle) -> (String, PathBuf) {
                 .unwrap_or_else(|| PathBuf::from(&spec.id));
             crate::root::instance_key(&workspace, home.as_deref())
         }
-        ConnectionKind::LocalAttach { url } | ConnectionKind::Remote { url, .. } => LaunchUrl::parse(url)
-            .map(|parsed| crate::root::instance_key(&PathBuf::from(&parsed.origin), None))
-            .unwrap_or_else(|| crate::root::instance_key(&PathBuf::from(&spec.id), None)),
+        ConnectionKind::LocalAttach { url } | ConnectionKind::Remote { url, .. } => {
+            LaunchUrl::parse(url)
+                .map(|parsed| crate::root::instance_key(&PathBuf::from(&parsed.origin), None))
+                .unwrap_or_else(|| crate::root::instance_key(&PathBuf::from(&spec.id), None))
+        }
     };
     // A page is a singleton, so its storage is addressed by kind rather than
     // through the instance-key hash.
@@ -1677,7 +1923,10 @@ mod tests {
     /// bug a restored local tab used to show instead of "正在启动 DSH…".
     #[test]
     fn placeholder_path_identifies_the_tab() {
-        assert_eq!(placeholder_path("abc123"), "shell/placeholder.html?tab=abc123");
+        assert_eq!(
+            placeholder_path("abc123"),
+            "shell/placeholder.html?tab=abc123"
+        );
 
         let url = tauri::Url::parse("http://tauri.localhost/")
             .unwrap()
@@ -1685,7 +1934,9 @@ mod tests {
             .unwrap();
         assert_eq!(url.path(), "/shell/placeholder.html");
         assert_eq!(
-            url.query_pairs().find(|(key, _)| key == "tab").map(|(_, value)| value.into_owned()),
+            url.query_pairs()
+                .find(|(key, _)| key == "tab")
+                .map(|(_, value)| value.into_owned()),
             Some("abc123".to_string())
         );
     }

@@ -66,8 +66,15 @@ pub const MAIN_WINDOW: &str = "main";
 /// The strip handles the action after the styled popup closes.
 pub const TAB_MENU_EVENT: &str = "dshell://tab-menu";
 
+/// The reusable popup's own open payload: `{ tabId, page, theme? }`.
+pub const TAB_MENU_OPEN_EVENT: &str = "dshell://tab-menu-open";
+
 /// DSH's sidebar surface, reported by the content bridge and consumed by chrome.
 pub const TAB_THEME_EVENT: &str = "dshell://tab-theme";
+
+/// A saved preference changed outside the settings page (currently a tab
+/// rename updating a history label). Payload is the complete `Config`.
+pub const CONFIG_CHANGED_EVENT: &str = "dshell://config-changed";
 
 /// Marker whose presence at startup means the previous run did not reach a clean
 /// exit. Written when the app boots, removed by the exit hook in [`main`].
@@ -108,6 +115,9 @@ pub fn main() {
             commands::reload_tab,
             commands::show_tab_menu,
             commands::tab_menu_choose,
+            commands::hide_tab_menu,
+            commands::tab_menu_state,
+            commands::tab_menu_measured,
             commands::clear_tab_data,
             commands::focus_chrome,
             commands::open_in_system_browser,
@@ -145,16 +155,39 @@ pub fn main() {
     builder
         .build(tauri::generate_context!())
         .expect("failed to start dshell")
-        .run(move |_app, event| {
+        .run(move |app, event| match event {
+            // The first moment a webview can be built: the loop is running, so
+            // the creation this spawn waits on lands. It warms the tab-menu
+            // popup before the first right-click needs it; a failure there is
+            // not fatal, because the click falls back to creating it.
+            tauri::RunEvent::Ready => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::prewarm_tab_menu(&app);
+                });
+            }
+            // The reused menu popup is a real window even while hidden, and the
+            // app only exits once the last window is gone. Take it down with the
+            // main window, or closing the app would leave the process running.
+            tauri::RunEvent::WindowEvent { label, event, .. } => {
+                if label == MAIN_WINDOW && matches!(event, tauri::WindowEvent::Destroyed) {
+                    // Deferred: this callback already runs inside a window
+                    // message, and destroying another window from here would
+                    // re-enter that dispatch.
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        commands::dispose_tab_menu(&app);
+                    });
+                }
+            }
             // The *absence* of the marker is what "the last run exited cleanly"
             // means, so removing it here is the only thing that keeps the
             // warning truthful. `RunEvent::Exit` is emitted by the event loop
             // itself once the last window is gone — which is exactly the path the
             // close button takes — while a crash or a force kill never reaches
             // it. That is the case the warning exists for.
-            if matches!(event, tauri::RunEvent::Exit) {
-                clear_session_marker(&session_marker);
-            }
+            tauri::RunEvent::Exit => clear_session_marker(&session_marker),
+            _ => {}
         });
 }
 
@@ -256,7 +289,10 @@ fn restore_tabs(state: Arc<AppState>) {
             *slot = Some(note);
         }
         let order = if file.order.is_empty() {
-            file.tabs.iter().map(|spec| spec.id.clone()).collect::<Vec<_>>()
+            file.tabs
+                .iter()
+                .map(|spec| spec.id.clone())
+                .collect::<Vec<_>>()
         } else {
             file.order.clone()
         };
@@ -419,7 +455,10 @@ pub fn shell_open(url: &str) -> std::io::Result<()> {
     }
     #[cfg(not(windows))]
     {
-        std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
     }
 }
 
@@ -437,7 +476,10 @@ pub fn shell_reveal(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(not(windows))]
     {
         let target = path.parent().unwrap_or(path);
-        std::process::Command::new("xdg-open").arg(target).spawn().map(|_| ())
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map(|_| ())
     }
 }
 
@@ -458,7 +500,10 @@ fn shell_execute(verb: &str, target: &str, params: Option<String>) -> std::io::R
     }
 
     fn wide(value: &str) -> Vec<u16> {
-        OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(value)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     let verb = wide(verb);
@@ -469,7 +514,10 @@ fn shell_execute(verb: &str, target: &str, params: Option<String>) -> std::io::R
             std::ptr::null_mut(),
             verb.as_ptr(),
             target.as_ptr(),
-            params.as_ref().map(|p| p.as_ptr()).unwrap_or(std::ptr::null()),
+            params
+                .as_ref()
+                .map(|p| p.as_ptr())
+                .unwrap_or(std::ptr::null()),
             std::ptr::null(),
             1,
         )

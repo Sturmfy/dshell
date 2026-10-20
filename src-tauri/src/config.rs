@@ -3,11 +3,12 @@
 //! Two files, both under the data root: `config.json` (preferences) and
 //! `tabs.json` (what to restore). Neither ever contains a launch token.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{FailureCode, Failure};
+use crate::error::{Failure, FailureCode};
 
 pub const PINNED_DSH_VERSION: &str = "0.2.0-rc.2";
 /// `2`: `killOnClose` became `true` by default. See [`Config::migrate`].
@@ -141,6 +142,17 @@ pub struct Config {
     #[serde(default)]
     pub pinned_connections: Vec<String>,
 
+    /// User-chosen tab names, keyed by the tab's stable instance identity.
+    ///
+    /// The identity is the same `instanceKey` the tab view and webview storage
+    /// already use (workspace + DSH_HOME for a spawned backend, origin for an
+    /// attached one), so a name follows its connection across restarts even
+    /// when DSH changes its own session title. `tabs.json` also carries the
+    /// current title; this map is what lets a *new* tab for the same instance
+    /// (or a reconnect from history) pick the name back up.
+    #[serde(default)]
+    pub tab_names: BTreeMap<String, String>,
+
     /// Preferred UI language: `"system"`, `"zh"` or `"en"`.
     #[serde(default = "default_language")]
     pub language: String,
@@ -190,7 +202,13 @@ pub struct WindowConfig {
 
 impl Default for WindowConfig {
     fn default() -> Self {
-        Self { width: 1280.0, height: 820.0, x: None, y: None, maximized: false }
+        Self {
+            width: 1280.0,
+            height: 820.0,
+            x: None,
+            y: None,
+            maximized: false,
+        }
     }
 }
 
@@ -283,6 +301,7 @@ impl Default for Config {
             source_container: None,
             recent_connections: Vec::new(),
             pinned_connections: Vec::new(),
+            tab_names: BTreeMap::new(),
             language: default_language(),
             background_mode: default_background_mode(),
             fixed_port: false,
@@ -384,13 +403,49 @@ impl Config {
     /// on every start, so keying on the whole URL would fill the list with
     /// near-duplicates of one target while leaving stale ones behind.
     pub fn remember_connection(&mut self, entry: RecentConnection) {
-        self.recent_connections.retain(|existing| existing.id != entry.id);
+        self.recent_connections
+            .retain(|existing| existing.id != entry.id);
         self.recent_connections.insert(0, entry);
         self.recent_connections.truncate(MAX_RECENT_CONNECTIONS);
     }
 
     pub fn forget_connection(&mut self, id: &str) {
         self.recent_connections.retain(|existing| existing.id != id);
+    }
+
+    /// The saved name for one instance, if the user has ever renamed it.
+    pub fn tab_name(&self, instance_key: &str) -> Option<&str> {
+        self.tab_names
+            .get(instance_key)
+            .map(String::as_str)
+            .filter(|name| !name.trim().is_empty())
+    }
+
+    /// Persist a tab's user-chosen name under its stable instance identity.
+    ///
+    /// Names are trimmed and bounded here as well as at the command boundary:
+    /// `config.json` is hand-editable, and a blank value must mean "no custom
+    /// name" rather than a tab that renders as an empty title.
+    pub fn remember_tab_name(&mut self, instance_key: &str, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            self.tab_names.remove(instance_key);
+            return;
+        }
+        self.tab_names
+            .insert(instance_key.to_string(), name.chars().take(64).collect());
+    }
+
+    /// Keep a remembered connection's label in step with a tab rename.
+    ///
+    /// The history list is keyed by origin, so only attach/remote tabs have an
+    /// entry to update; a spawned backend is identified by its `instance_key`.
+    pub fn rename_connection_label(&mut self, origin: &str, label: &str) {
+        for entry in &mut self.recent_connections {
+            if entry.id == origin {
+                entry.label = label.to_string();
+            }
+        }
     }
 
     /// The directory the user chose to keep the checkout *in*.
@@ -441,11 +496,15 @@ impl TabsFile {
     pub fn load(path: &Path) -> (Self, Option<String>) {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return (Self::default(), None)
+            }
             Err(err) => {
                 return (
                     Self::default(),
-                    Some(format!("读取 tabs.json 失败（{err}），本次没有恢复任何选项卡")),
+                    Some(format!(
+                        "读取 tabs.json 失败（{err}），本次没有恢复任何选项卡"
+                    )),
                 )
             }
         };
@@ -454,7 +513,9 @@ impl TabsFile {
             Err(err) => {
                 return (
                     Self::default(),
-                    Some(format!("tabs.json 不是合法 JSON（{err}），本次没有恢复任何选项卡")),
+                    Some(format!(
+                        "tabs.json 不是合法 JSON（{err}），本次没有恢复任何选项卡"
+                    )),
                 )
             }
         };
@@ -480,7 +541,14 @@ impl TabsFile {
         } else {
             None
         };
-        (Self { schema_version: SCHEMA_VERSION, order, tabs }, note)
+        (
+            Self {
+                schema_version: SCHEMA_VERSION,
+                order,
+                tabs,
+            },
+            note,
+        )
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -512,9 +580,15 @@ mod tests {
 
     #[test]
     fn custom_relative_path_is_rejected() {
-        let setting = DshHomeSetting::Custom { path: "relative/home".into() };
+        let setting = DshHomeSetting::Custom {
+            path: "relative/home".into(),
+        };
         let err = setting
-            .resolve(Path::new("E:\\data"), Path::new("E:\\data\\dsh-home"), Path::new("E:\\ws"))
+            .resolve(
+                Path::new("E:\\data"),
+                Path::new("E:\\data\\dsh-home"),
+                Path::new("E:\\ws"),
+            )
             .unwrap_err();
         assert_eq!(err.code, FailureCode::DshHomeInvalid);
     }
@@ -523,7 +597,11 @@ mod tests {
     fn blank_custom_path_means_system_default() {
         let setting = DshHomeSetting::Custom { path: "   ".into() };
         let value = setting
-            .resolve(Path::new("E:\\data"), Path::new("E:\\data\\dsh-home"), Path::new("E:\\ws"))
+            .resolve(
+                Path::new("E:\\data"),
+                Path::new("E:\\data\\dsh-home"),
+                Path::new("E:\\ws"),
+            )
             .unwrap();
         assert!(value.is_none());
     }
@@ -532,7 +610,11 @@ mod tests {
     fn instance_mode_derives_from_workspace_name() {
         let setting = DshHomeSetting::Instance;
         let value = setting
-            .resolve(Path::new("E:\\data"), Path::new("E:\\data\\dsh-home"), Path::new("E:\\proj\\my-app"))
+            .resolve(
+                Path::new("E:\\data"),
+                Path::new("E:\\data\\dsh-home"),
+                Path::new("E:\\proj\\my-app"),
+            )
             .unwrap()
             .unwrap();
         assert!(value.ends_with("dsh-home\\my-app"));
@@ -589,9 +671,14 @@ mod tests {
         for mode in [
             DshHomeSetting::System,
             DshHomeSetting::Instance,
-            DshHomeSetting::Custom { path: "E:\\h".into() },
+            DshHomeSetting::Custom {
+                path: "E:\\h".into(),
+            },
         ] {
-            let config = Config { dsh_home: mode, ..Config::default() };
+            let config = Config {
+                dsh_home: mode,
+                ..Config::default()
+            };
             let json = serde_json::to_string(&config).unwrap();
             let back: Config = serde_json::from_str(&json).unwrap();
             assert_eq!(
@@ -620,7 +707,10 @@ mod tests {
         let tabs_file = dir.join("tabs.json");
         std::fs::write(&tabs_file, format!("\u{feff}{body}")).unwrap();
         let (_, note) = TabsFile::load(&tabs_file);
-        assert!(note.is_none(), "a BOM must not discard the tab list: {note:?}");
+        assert!(
+            note.is_none(),
+            "a BOM must not discard the tab list: {note:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -698,8 +788,14 @@ mod tests {
         .unwrap();
         let (migrated, note, changed) = Config::load(&file);
         assert!(note.is_none(), "{note:?}");
-        assert!(changed, "the caller has to know it should write the file back");
-        assert!(migrated.kill_on_close, "the old default must not survive as a choice");
+        assert!(
+            changed,
+            "the caller has to know it should write the file back"
+        );
+        assert!(
+            migrated.kill_on_close,
+            "the old default must not survive as a choice"
+        );
         assert_eq!(migrated.schema_version, SCHEMA_VERSION);
         assert_eq!(migrated.recent_workspaces, vec!["E:\\ws".to_string()]);
 
@@ -721,7 +817,10 @@ mod tests {
     /// Migration is idempotent and never touches a file from a newer build.
     #[test]
     fn migrate_is_idempotent_and_leaves_future_versions_alone() {
-        let mut config = Config { kill_on_close: false, ..Config::default() };
+        let mut config = Config {
+            kill_on_close: false,
+            ..Config::default()
+        };
         config.migrate();
         assert!(!config.kill_on_close, "already at the current schema");
 
@@ -759,7 +858,10 @@ mod tests {
             false,
         ));
         assert_eq!(config.recent_connections.len(), 2);
-        assert_eq!(config.recent_connections[0].url, "http://127.0.0.1:3080/?token=c");
+        assert_eq!(
+            config.recent_connections[0].url,
+            "http://127.0.0.1:3080/?token=c"
+        );
         assert_eq!(config.recent_connections[1].id, "http://10.0.0.2:3080");
 
         config.forget_connection("http://127.0.0.1:3080");
@@ -775,6 +877,36 @@ mod tests {
             ));
         }
         assert_eq!(config.recent_connections.len(), MAX_RECENT_CONNECTIONS);
+    }
+
+    /// A rename is remembered per instance, survives a save/load cycle, and
+    /// updates the history label users actually see.
+    #[test]
+    fn tab_names_round_trip_and_rename_history_labels() {
+        let mut config = Config::default();
+        config.remember_connection(RecentConnection::new(
+            "http://127.0.0.1:3080/?token=a",
+            "http://127.0.0.1:3080",
+            "本地 · 3080",
+            false,
+        ));
+
+        config.remember_tab_name("inst-abc", "  工作台  ");
+        config.remember_tab_name("inst-empty", "   ");
+        config.rename_connection_label("http://127.0.0.1:3080", "工作台");
+        assert_eq!(config.tab_name("inst-abc"), Some("工作台"));
+        assert_eq!(config.tab_name("inst-empty"), None);
+        assert_eq!(config.recent_connections[0].label, "工作台");
+
+        let json = serde_json::to_string(&config).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tab_name("inst-abc"), Some("工作台"));
+        assert_eq!(back.recent_connections[0].label, "工作台");
+
+        // A blank name removes the entry instead of persisting an empty tab.
+        let mut config = back;
+        config.remember_tab_name("inst-abc", "");
+        assert_eq!(config.tab_name("inst-abc"), None);
     }
 
     #[test]

@@ -437,6 +437,49 @@ textarea {
   border: 1px solid var(--fg-faint);
 }
 
+/* Session attention: the same semantic colors DSH paints on its own session
+   rows. These dots jump intermittently: a short hop every couple of seconds
+   reads as "look here", while a continuous wobble reads as decoration. */
+.tab__dot--attention-input {
+  background: var(--warn);
+}
+
+.tab__dot--attention-done {
+  background: var(--ok);
+}
+
+.tab__dot--jump {
+  animation: tab-dot-jump 2.4s cubic-bezier(0.3, 0.7, 0.4, 1) infinite;
+}
+
+@keyframes tab-dot-jump {
+  0%,
+  58%,
+  100% {
+    transform: translateY(0);
+  }
+
+  8% {
+    transform: translateY(-3px);
+  }
+
+  16% {
+    transform: translateY(0);
+  }
+
+  24% {
+    transform: translateY(-1.5px);
+  }
+
+  30% {
+    transform: translateY(0);
+  }
+}
+
+/* Deliberately not disabled by prefers-reduced-motion: this is the one motion
+   that means "a tab has something for you to confirm", and a static dot cannot
+   carry that instruction. The hop is short, low-amplitude, and intermittent. */
+
 @keyframes pulse {
   0%,
   100% {

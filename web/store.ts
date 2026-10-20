@@ -69,6 +69,12 @@ export class Store {
       else this.state.tabs.push(tab);
       this.emit();
     });
+    await listen<Config>(events.configChanged, (config) => {
+      // A tab rename can update a history label while the new-connection page
+      // is already open; adopting the saved config keeps that page truthful.
+      if (this.state.info) this.state.info.config = config;
+      this.emit();
+    });
     await listen<{ tabId: string; stage: string; message: string }>(
       events.runtimeProgress,
       (payload) => {

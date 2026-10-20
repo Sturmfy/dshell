@@ -200,6 +200,183 @@
 
   installThemeReporter()
 
+  // -------------------------------------------------------------------------
+  // Custom tab title + session attention
+  //
+  // Both are read from the DSH page because only it knows them:
+  //
+  //   * the top-left brand is DSH's own title; a custom tab name belongs there
+  //     while the tab carries one;
+  //   * the session rows already paint their own state dot (error / waiting for
+  //     the user / finished-but-unread / running), and those dots are the same
+  //     states dshell's tab dot must summarize.
+  //
+  // Nothing here changes DSH's behaviour or its data: the title is text in one
+  // brand element, and the attention report is a count of attributes DSH has
+  // already rendered.
+  // -------------------------------------------------------------------------
+
+  let customTitle = ''
+  let customTitleUsed = false
+  const originalBrand = new WeakMap()
+  let attentionSignature = ''
+
+  function brandNameElement() {
+    for (const element of document.querySelectorAll('[class*="brandName" i]')) {
+      if (element && typeof element === 'object') return element
+    }
+    return null
+  }
+
+  function applyCustomTitle() {
+    // Most tabs have no custom name; do not query DSH's DOM on every mutation
+    // for them.
+    if (customTitle === '' && !customTitleUsed) return
+    const element = brandNameElement()
+    if (!element) return
+    if (customTitle === '') {
+      const original = originalBrand.get(element)
+      if (typeof original === 'string' && element.innerHTML !== original) {
+        element.innerHTML = original
+      }
+      customTitleUsed = false
+      return
+    }
+    customTitleUsed = true
+    if (!originalBrand.has(element)) {
+      originalBrand.set(element, element.innerHTML ?? '')
+    }
+    if (element.textContent === customTitle) return
+    element.textContent = customTitle
+    if (element.setAttribute) element.setAttribute('data-dshell-title', customTitle)
+    if (element.style) {
+      element.style.whiteSpace = 'nowrap'
+      element.style.overflow = 'hidden'
+      element.style.textOverflow = 'ellipsis'
+    }
+  }
+
+  /**
+   * Count the states DSH has painted on its session rows.
+   *
+   * `done` is DSH's own "finished while unread" state, so it is already the
+   * visited/unvisited distinction the tab strip needs. A sidebar that is
+   * collapsed renders no rows; keeping the previous report is better than
+   * pretending every session became idle.
+   */
+  function scanSessionAttention() {
+    const rows = document.querySelectorAll('[data-row-key^="session:"]')
+    if (!rows || rows.length === 0) return
+    let error = 0
+    let needsInput = 0
+    let completed = 0
+    let running = 0
+    for (const row of rows) {
+      const dot = row && typeof row.querySelector === 'function'
+        ? row.querySelector('[data-state]')
+        : null
+      const state = dot && typeof dot.getAttribute === 'function'
+        ? dot.getAttribute('data-state')
+        : ''
+      switch (state) {
+        case 'error':
+          error += 1
+          break
+        case 'warning':
+          needsInput += 1
+          break
+        case 'done':
+          completed += 1
+          break
+        case 'ongoing':
+          running += 1
+          break
+        default:
+          break
+      }
+    }
+    const signature = `${error}|${needsInput}|${completed}|${running}`
+    if (signature === attentionSignature) return
+    attentionSignature = signature
+    post({ v: PROTOCOL, type: 'sessionAttention', error, needsInput, completed, running })
+  }
+
+  let titleScanTimer = 0
+  let attentionScanTimer = 0
+
+  function scheduleTitleScan() {
+    if (titleScanTimer !== 0) return
+    titleScanTimer = setTimeout(() => {
+      titleScanTimer = 0
+      applyCustomTitle()
+    }, 120)
+  }
+
+  function scheduleAttentionScan() {
+    if (attentionScanTimer !== 0) return
+    attentionScanTimer = setTimeout(() => {
+      attentionScanTimer = 0
+      scanSessionAttention()
+    }, 120)
+  }
+
+  let domWatchersStarted = false
+
+  /**
+   * Start observing once there is a document to observe.
+   *
+   * WebView2 runs this script before the document is parsed, so
+   * `document.documentElement` can still be null at first. Installing the
+   * observers then would silently leave the page without them, and the brand
+   * DSH mounts seconds later would never be seen.
+   */
+  function startDomWatchers() {
+    if (domWatchersStarted) return
+    if (typeof MutationObserver !== 'function' || !document.documentElement) return
+    domWatchersStarted = true
+    // DSH is a React app; the brand and the rows are replaced on ordinary
+    // renders, so a one-shot read would be overwritten within seconds.
+    // Child-list only: DSH's streaming chat mutates text nodes thousands of
+    // times per turn, and the brand is replaced as an element, not as a text
+    // node. The interval below still catches an in-place text edit.
+    new MutationObserver(scheduleTitleScan).observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+    })
+    new MutationObserver(scheduleAttentionScan).observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['data-state'],
+    })
+    // A cheap fallback for changes that produce no mutation (a sibling row
+    // removed while its neighbour's dot is unchanged, for example).
+    setInterval(() => {
+      applyCustomTitle()
+      scanSessionAttention()
+    }, 1500)
+    applyCustomTitle()
+    scanSessionAttention()
+  }
+
+  function installDomWatchers() {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startDomWatchers, { once: true })
+    } else {
+      startDomWatchers()
+    }
+    // DSH's client bootstrap can replace the document early enough that the
+    // load event is missed; this timer makes the observer self-starting.
+    setTimeout(startDomWatchers, 300)
+  }
+
+  function setCustomTitle(title) {
+    customTitle = typeof title === 'string' ? title.trim() : ''
+    applyCustomTitle()
+  }
+
+  installDomWatchers()
+
   function settlePick(message) {
     const pending = pendingPicks.get(message.id)
     if (!pending) return
@@ -230,7 +407,11 @@
     if (message.type === 'hello') {
       hostReady = true
       reportTheme(true)
-    } else if (message.type === 'pickDirectoryResult') settlePick(message)
+      if (typeof message.title === 'string') setCustomTitle(message.title)
+      scheduleTitleScan()
+      scheduleAttentionScan()
+    } else if (message.type === 'title') setCustomTitle(message.title)
+    else if (message.type === 'pickDirectoryResult') settlePick(message)
     else if (message.type === 'hostPathsResult') settlePaths(message)
   })
 

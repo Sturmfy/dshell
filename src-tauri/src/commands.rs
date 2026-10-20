@@ -5,11 +5,15 @@
 //! deadlock when made from a synchronous command or an event handler (wry#583).
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 
 use crate::config::{Config, DshHomeSetting, ManagedInstall};
 use crate::error::{Action, Failure, FailureCode};
@@ -77,7 +81,9 @@ pub async fn app_info(
     refresh_environment: Option<bool>,
 ) -> Result<AppInfo, Failure> {
     let state = state_of(&app)?;
-    let environment = state.environment(refresh_environment.unwrap_or(false)).await;
+    let environment = state
+        .environment(refresh_environment.unwrap_or(false))
+        .await;
     let config = state.config_snapshot().await;
     let (tabs, _active) = state.manager.snapshot().await;
     let boot_note = state.boot_note.lock().await.clone();
@@ -103,7 +109,11 @@ fn root_view_config(state: &AppState, config: &Config) -> RootView {
         note: state.data_root.note.clone(),
         config_file: state.data_root.config_file().to_string_lossy().to_string(),
         runtimes_dir: state.data_root.runtimes_dir().to_string_lossy().to_string(),
-        webview_data_dir: state.data_root.webview_data_dir().to_string_lossy().to_string(),
+        webview_data_dir: state
+            .data_root
+            .webview_data_dir()
+            .to_string_lossy()
+            .to_string(),
         env_var: crate::root::ENV_VAR.to_string(),
         env_value: std::env::var(crate::root::ENV_VAR).ok(),
         default_dsh_home: crate::root::preview_default_dsh_home()
@@ -153,9 +163,8 @@ pub async fn install_pnpm(app: AppHandle) -> Result<EnvironmentSnapshot, Failure
             .blocked
             .clone()
             .unwrap_or_else(|| "无法自动安装 pnpm".to_string());
-        return Err(Failure::new(FailureCode::NoNodeRuntime, blocked).with_detail(
-            "也可以在终端里自己运行 `npm install -g pnpm`，然后点「重新检测」。",
-        ));
+        return Err(Failure::new(FailureCode::NoNodeRuntime, blocked)
+            .with_detail("也可以在终端里自己运行 `npm install -g pnpm`，然后点「重新检测」。"));
     };
 
     let output = crate::runtime::node::install_pnpm(&npm).await?;
@@ -231,9 +240,8 @@ pub async fn active_tab(state: Shared<'_>) -> Result<Option<String>, Failure> {
 /// focus model and close rules stay exactly the ones every other tab uses.
 #[tauri::command]
 pub async fn open_page(state: Shared<'_>, page: String) -> Result<String, Failure> {
-    let kind = PageKind::parse(&page).ok_or_else(|| {
-        Failure::new(FailureCode::Internal, format!("未知的页面：{page}"))
-    })?;
+    let kind = PageKind::parse(&page)
+        .ok_or_else(|| Failure::new(FailureCode::Internal, format!("未知的页面：{page}")))?;
     state.manager.open_page(kind, true).await
 }
 
@@ -421,7 +429,12 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
                 .map_err(|failure| failure.with_defaults())?;
 
             let runtime_spec = resolve_runtime(&config, &runtime_id, &state).await?;
-            let title = title.unwrap_or_else(|| {
+            let named = title
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.chars().take(64).collect::<String>());
+            let title = named.clone().unwrap_or_else(|| {
                 match chosen_workspace.as_deref().and_then(|chosen| {
                     PathBuf::from(chosen)
                         .file_name()
@@ -435,6 +448,7 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
             let spec = TabSpec {
                 id: id.clone(),
                 title,
+                custom_title: named.clone(),
                 display_origin: None,
                 connection: ConnectionKind::LocalSpawn {
                     workspace: chosen_workspace.clone(),
@@ -448,6 +462,12 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
             let instance_home = state.instance_home_for(&spec);
             let instance_key = state.manager.open_tab(spec.clone(), instance_home).await?;
             state.manager.activate(Some(&id)).await;
+            if let Some(named) = &named {
+                state
+                    .update_config(|config| config.remember_tab_name(&instance_key, named))
+                    .await
+                    .ok();
+            }
             // Only directories the user picked are remembered as projects.
             if !workspace_path.as_os_str().is_empty() {
                 state
@@ -468,7 +488,12 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
 
             Ok(NewTabResult { id, instance_key })
         }
-        NewTabRequest::Attach { url, remote, allow_plaintext, label } => {
+        NewTabRequest::Attach {
+            url,
+            remote,
+            allow_plaintext,
+            label,
+        } => {
             let parsed = crate::dsh::url::LaunchUrl::parse(&url).ok_or_else(|| {
                 Failure::new(FailureCode::AttachNotDsh, "无法解析该地址")
                     .with_detail("需要 `http://host:port/?token=…` 形式。")
@@ -518,24 +543,37 @@ pub async fn new_tab(app: AppHandle, request: NewTabRequest) -> Result<NewTabRes
                 }
             });
             let connection = if is_remote {
-                ConnectionKind::Remote { url: url.clone(), allow_plaintext }
+                ConnectionKind::Remote {
+                    url: url.clone(),
+                    allow_plaintext,
+                }
             } else {
                 ConnectionKind::LocalAttach { url: url.clone() }
             };
             let spec = TabSpec {
                 id: id.clone(),
                 title,
+                custom_title: named.clone(),
                 display_origin: Some(parsed.origin.clone()),
                 connection,
             };
             let instance_key = state.manager.open_tab(spec.clone(), None).await?;
             state.manager.activate(Some(&id)).await;
+            if let Some(named) = &named {
+                state
+                    .update_config(|config| config.remember_tab_name(&instance_key, named))
+                    .await
+                    .ok();
+            }
             // Remembered before the connection has finished on purpose: the
             // remember step is what makes a retry possible from the history list,
-            // and a failed probe leaves exactly that situation.
+            // and a failed probe leaves exactly that situation. A name saved for
+            // this instance (even one typed in another tab) becomes the history
+            // label too, instead of being replaced by "host · port" again.
             let origin = parsed.origin.clone();
-            let history_label =
-                named.unwrap_or_else(|| format!("{} · {}", parsed.host, parsed.port));
+            let history_label = named
+                .or_else(|| config.tab_name(&instance_key).map(str::to_string))
+                .unwrap_or_else(|| format!("{} · {}", parsed.host, parsed.port));
             state
                 .update_config(|config| {
                     config.remember_connection(crate::config::RecentConnection::new(
@@ -596,7 +634,9 @@ pub async fn probe_connection(
             .with_detail("需要 `http://host:port` 形式。")
     })?;
 
-    let Some(url) = url.map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
+    let Some(url) = url
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
     else {
         if crate::dsh::probe::probe_dsh_server(&target.origin, CONNECTION_PROBE_TIMEOUT)
             .await
@@ -620,11 +660,10 @@ pub async fn probe_connection(
             .with_detail("请粘贴 `dsh web` 打印的完整 URL，或只粘贴 token。")
     })?;
     if !parsed.has_token() {
-        return Err(Failure::new(
-            FailureCode::AttachAuthRequired,
-            "启动 URL 里没有 token",
-        )
-        .with_detail("请在运行 `dsh web` 的终端里复制整行输出，或单独粘贴 token。"));
+        return Err(
+            Failure::new(FailureCode::AttachAuthRequired, "启动 URL 里没有 token")
+                .with_detail("请在运行 `dsh web` 的终端里复制整行输出，或单独粘贴 token。"),
+        );
     }
 
     // Identify the service before exchanging a token: a random HTTP server can
@@ -641,7 +680,11 @@ pub async fn probe_connection(
     }
 
     crate::dsh::probe::verify_ready(&parsed.origin, &url, CONNECTION_PROBE_TIMEOUT).await?;
-    Ok(ConnectionProbe { ok: true, requires_token: false, origin: parsed.origin })
+    Ok(ConnectionProbe {
+        ok: true,
+        requires_token: false,
+        origin: parsed.origin,
+    })
 }
 
 /// Map a runtime id from the UI onto a concrete spec.
@@ -652,29 +695,30 @@ async fn resolve_runtime(
 ) -> Result<RuntimeSpec, Failure> {
     let pinned = config.package_spec();
     match runtime_id {
-        "npx" => Ok(RuntimeSpec::Npx { package_spec: pinned }),
+        "npx" => Ok(RuntimeSpec::Npx {
+            package_spec: pinned,
+        }),
         "source" => {
             let root = config.source_checkout_dir(&state.data_root.path);
             let status = runtime::source::status(&root, None).await;
             if !status.usable() {
-                return Err(Failure::new(
-                    FailureCode::SourceMissing,
-                    "源码版还没有准备好",
-                )
-                .with_detail(format!(
-                    "{}：{}",
-                    root.display(),
-                    if let Some(blocked) = &status.blocked {
-                        blocked.clone()
-                    } else if !status.checkout {
-                        "还没有克隆仓库".to_string()
-                    } else if !status.installed {
-                        "还没有安装依赖".to_string()
-                    } else {
-                        "还没有构建前端".to_string()
-                    }
-                ))
-                .with_action(Action::primary("prepare-source", "现在下载并构建")));
+                return Err(
+                    Failure::new(FailureCode::SourceMissing, "源码版还没有准备好")
+                        .with_detail(format!(
+                            "{}：{}",
+                            root.display(),
+                            if let Some(blocked) = &status.blocked {
+                                blocked.clone()
+                            } else if !status.checkout {
+                                "还没有克隆仓库".to_string()
+                            } else if !status.installed {
+                                "还没有安装依赖".to_string()
+                            } else {
+                                "还没有构建前端".to_string()
+                            }
+                        ))
+                        .with_action(Action::primary("prepare-source", "现在下载并构建")),
+                );
             }
             Ok(runtime::source::runtime_spec(&root))
         }
@@ -705,14 +749,20 @@ async fn resolve_runtime(
                 )
                 .with_detail("期望存在 node_modules/.bin/dsh.cmd，或 apps/cli/src/bin.ts。")
             })?;
-            Ok(RuntimeSpec::Managed { root: install.root.clone(), mode })
+            Ok(RuntimeSpec::Managed {
+                root: install.root.clone(),
+                mode,
+            })
         }
         "external" => {
             let binary = config.extra_binary.clone().ok_or_else(|| {
                 Failure::new(FailureCode::NpxInstallFailed, "还没有指定后端二进制")
                     .with_action(Action::primary("pick-binary", "选择文件"))
             })?;
-            Ok(RuntimeSpec::External { binary, label: None })
+            Ok(RuntimeSpec::External {
+                binary,
+                label: None,
+            })
         }
         other => Err(Failure::new(
             FailureCode::Internal,
@@ -754,15 +804,176 @@ pub async fn reload_tab(state: Shared<'_>, tab_id: String) -> Result<(), Failure
     state.manager.reload(&tab_id).await
 }
 
-/// Show the tab menu as a small styled popup window. A native menu follows the
-/// OS theme and cannot match dshell's surface; this window is part of dshell's
-/// own UI and still works on every Tauri target.
+// ------------------------------------------------------------- tab menu popup
+
+/// The one reusable tab-menu popup.
+///
+/// The menu cannot live inside the strip: that webview is 38px tall and clips
+/// its own content, so the menu is a real window. What it must not be is a
+/// *new* window per right-click — that put a whole WebView2 environment
+/// (browser process, renderer, document load) on the interaction path. This
+/// window is created once, ahead of the first click, and from then on only
+/// moved, shown and hidden.
+pub const TAB_MENU_LABEL: &str = "tab-menu";
+
+/// Size of the very first open, and the fallback when the page never reports
+/// its own measurement. Every real open is sized to its content instead: the
+/// popup is transparent, so a window larger than the panel shows as slack.
+const TAB_MENU_FALLBACK_WIDTH: f64 = 228.0;
+const TAB_MENU_FALLBACK_HEIGHT: f64 = 258.0;
+
+/// The DSH surface the menu should wear: the sidebar colours the content bridge
+/// reports, relayed by the strip for the tab whose menu is opening.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabMenuTheme {
+    pub background: String,
+    pub foreground: String,
+    pub mode: String,
+}
+
+/// What the popup renders for one open.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabMenuPayload {
+    pub tab_id: String,
+    pub page: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<TabMenuTheme>,
+}
+
+/// The payload of the menu being shown. Kept for the page's own pull on load:
+/// a menu opened while the popup was still loading must not lose its content to
+/// an event that arrived before its listener existed.
+static TAB_MENU_PENDING: Mutex<Option<TabMenuPayload>> = Mutex::new(None);
+
+/// One open that has not been shown yet.
+///
+/// Only the page knows how large its rows actually are, so an open is two
+/// steps: the page renders and reports its bounds, then the window is sized and
+/// shown. Showing first would paint the previous open's size for a frame.
+struct TabMenuOpen {
+    generation: u64,
+    /// Click point in screen coordinates; clamped once the size is known.
+    left: f64,
+    top: f64,
+    /// Size to use if the page never reports.
+    fallback_width: f64,
+    fallback_height: f64,
+    revealed: bool,
+}
+
+/// The open in flight. A newer open replaces it, which is what turns a late
+/// measurement or a stale fallback timer into a no-op.
+static TAB_MENU_OPEN: Mutex<Option<TabMenuOpen>> = Mutex::new(None);
+
+/// Identifies one open, so a stale completion cannot act on a newer menu that
+/// happens to carry the same tab.
+static TAB_MENU_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The last size the page measured, reused when a page stalls.
+static TAB_MENU_LAST_SIZE: Mutex<Option<(f64, f64)>> = Mutex::new(None);
+
+/// Get the popup, creating it on first use.
+///
+/// Creation blocks until WebView2 has built the environment and loaded the
+/// document, which is exactly why it normally happens in
+/// [`prewarm_tab_menu`] instead of inside a right-click.
+pub fn tab_menu_window(app: &AppHandle) -> Result<WebviewWindow, Failure> {
+    if let Some(menu) = app.get_webview_window(TAB_MENU_LABEL) {
+        return Ok(menu);
+    }
+    // Never build the popup once the main window is gone: a brand-new window
+    // would restart the event loop the app is trying to leave, leaving the
+    // process alive with nothing on screen.
+    if app.get_window(crate::MAIN_WINDOW).is_none() {
+        return Err(Failure::new(FailureCode::Internal, "主窗口已关闭"));
+    }
+    let built = WebviewWindowBuilder::new(app, TAB_MENU_LABEL, WebviewUrl::App("menu.html".into()))
+        .title("")
+        .inner_size(TAB_MENU_FALLBACK_WIDTH, TAB_MENU_FALLBACK_HEIGHT)
+        // Hidden and parked off screen: the first show moves it into place.
+        .position(
+            -TAB_MENU_FALLBACK_WIDTH - 64.0,
+            -TAB_MENU_FALLBACK_HEIGHT - 64.0,
+        )
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(true)
+        .visible(false)
+        .build();
+    let menu = match built {
+        Ok(menu) => {
+            // The window is reused, so a close request (Alt+F4, or anything
+            // else) must hide it rather than destroy the warm WebView2 behind
+            // it. Attached once, by whichever call actually created the window.
+            let handle = menu.clone();
+            menu.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    if let Ok(mut pending) = TAB_MENU_PENDING.lock() {
+                        *pending = None;
+                    }
+                    if let Ok(mut open) = TAB_MENU_OPEN.lock() {
+                        *open = None;
+                    }
+                    let _ = handle.hide();
+                }
+            });
+            menu
+        }
+        // The prewarm task and a very early right-click can race for the label;
+        // the loser simply uses the window the winner created.
+        Err(err) => match app.get_webview_window(TAB_MENU_LABEL) {
+            Some(menu) => menu,
+            None => {
+                return Err(Failure::new(
+                    FailureCode::Internal,
+                    format!("创建菜单失败：{err}"),
+                ))
+            }
+        },
+    };
+    Ok(menu)
+}
+
+/// Create the popup before the first right-click needs it.
+///
+/// Called from a spawned task, never from `setup` itself: webview creation hops
+/// to the event loop and blocks until it lands, the same rule every other
+/// webview in this app follows (see `TabManager::open_tab`).
+pub fn prewarm_tab_menu(app: &AppHandle) {
+    let _ = tab_menu_window(app);
+}
+
+/// Drop the popup when the app is going away.
+///
+/// A hidden window still counts as a window, and Tauri exits only when the last
+/// one is gone: the reused popup would otherwise keep the process (and its tray
+/// of webviews) alive after the main window closes. `destroy` rather than
+/// `close` is deliberate — the popup's own close handler turns close requests
+/// into hides.
+pub fn dispose_tab_menu(app: &AppHandle) {
+    if let Some(menu) = app.get_webview_window(TAB_MENU_LABEL) {
+        let _ = menu.destroy();
+    }
+}
+
+/// Show the tab menu at a point in the strip.
+///
+/// The window is already warm; what is left is to hand the page a payload and
+/// let it report its own size, so the window can be sized around the rows
+/// instead of around a guess ([`reveal_tab_menu`] does the showing).
 #[tauri::command]
 pub async fn show_tab_menu(
     app: AppHandle,
     tab_id: String,
     x: f64,
     y: f64,
+    theme: Option<TabMenuTheme>,
 ) -> Result<(), Failure> {
     let state = state_of(&app)?;
     let tabs = state.manager.views().await;
@@ -772,11 +983,99 @@ pub async fn show_tab_menu(
         .ok_or_else(|| Failure::new(FailureCode::Internal, "选项卡不存在"))?;
     let is_page = tab.page_kind.is_some();
 
-    for (label, window) in app.webview_windows() {
-        if label.starts_with("tab-menu-") {
-            let _ = window.close();
-        }
+    let main = app
+        .get_window(crate::MAIN_WINDOW)
+        .ok_or_else(|| Failure::new(FailureCode::Internal, "主窗口不存在"))?;
+    let scale = main.scale_factor().unwrap_or(1.0);
+    let origin = main
+        .outer_position()
+        .map_err(|err| Failure::new(FailureCode::Internal, format!("读取窗口位置失败：{err}")))?
+        .to_logical::<f64>(scale);
+
+    let theme = theme.filter(|theme| {
+        matches!(theme.mode.as_str(), "dark" | "light")
+            && crate::bridge::is_safe_css_color(&theme.background)
+            && crate::bridge::is_safe_css_color(&theme.foreground)
+    });
+    let payload = TabMenuPayload {
+        tab_id,
+        page: is_page,
+        theme,
+    };
+
+    // It must exist before the payload can be rendered and measured — and it
+    // must stay hidden until that measurement arrives.
+    let _menu = tab_menu_window(&app)?;
+
+    let (fallback_width, fallback_height) = TAB_MENU_LAST_SIZE
+        .lock()
+        .ok()
+        .and_then(|size| *size)
+        .unwrap_or((TAB_MENU_FALLBACK_WIDTH, TAB_MENU_FALLBACK_HEIGHT));
+    let generation = TAB_MENU_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    if let Ok(mut open) = TAB_MENU_OPEN.lock() {
+        *open = Some(TabMenuOpen {
+            generation,
+            left: origin.x + x,
+            top: origin.y + y,
+            fallback_width,
+            fallback_height,
+            revealed: false,
+        });
     }
+    if let Ok(mut pending) = TAB_MENU_PENDING.lock() {
+        *pending = Some(payload.clone());
+    }
+    let _ = app.emit_to(TAB_MENU_LABEL, crate::TAB_MENU_OPEN_EVENT, payload);
+
+    // A page that never reports its size would leave the click with nothing on
+    // screen; reveal at the last measured size instead of nothing.
+    let fallback_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let _ = reveal_tab_menu(&fallback_app, generation, None);
+    });
+    Ok(())
+}
+
+/// Size the popup to the page's measurement (or the fallback) and show it.
+///
+/// One generation reveals once; a measurement that arrives after the fallback
+/// timer still corrects the size, because a wrongly sized menu is better than
+/// none but a jump to the right size is better still.
+fn reveal_tab_menu(
+    app: &AppHandle,
+    generation: u64,
+    measured: Option<(f64, f64)>,
+) -> Result<(), Failure> {
+    let (left, top, width, height) = {
+        let Ok(mut slot) = TAB_MENU_OPEN.lock() else {
+            return Ok(());
+        };
+        let Some(open) = slot.as_mut() else {
+            return Ok(());
+        };
+        if open.generation != generation {
+            return Ok(());
+        }
+        // A page that measured before laying out (or a bogus report) must not
+        // produce a one-pixel popup; treat it as no measurement at all and use
+        // the last known size.
+        let measured = measured.filter(|(width, height)| {
+            (40.0..=2000.0).contains(width) && (24.0..=2000.0).contains(height)
+        });
+        if open.revealed && measured.is_none() {
+            return Ok(());
+        }
+        open.revealed = true;
+        let (width, height) = measured.unwrap_or((open.fallback_width, open.fallback_height));
+        (
+            open.left,
+            open.top,
+            width.max(1.0).ceil(),
+            height.max(1.0).ceil(),
+        )
+    };
 
     let main = app
         .get_window(crate::MAIN_WINDOW)
@@ -786,35 +1085,81 @@ pub async fn show_tab_menu(
         .outer_position()
         .map_err(|err| Failure::new(FailureCode::Internal, format!("读取窗口位置失败：{err}")))?
         .to_logical::<f64>(scale);
-    let width = 228.0;
-    let height = if is_page { 50.0 } else { 258.0 };
-    let label = format!(
-        "tab-menu-{tab_id}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis())
-            .unwrap_or_default()
-    );
-    let payload = serde_json::json!({ "tabId": tab_id, "page": is_page });
-    let script = format!("window.__DSHELL_TAB_MENU__ = {payload};");
-    let menu = WebviewWindowBuilder::new(&app, label, WebviewUrl::App("menu.html".into()))
-        .title("")
-        .inner_size(width, height)
-        .position(origin.x + x, origin.y + y)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .shadow(true)
-        .visible(false)
-        .initialization_script(&script)
-        .build()
-        .map_err(|err| Failure::new(FailureCode::Internal, format!("创建菜单失败：{err}")))?;
+    // Keep the popup inside the app window: opened from the last tab it would
+    // otherwise hang off the right edge. The clamp now uses the content's real
+    // size rather than a guess.
+    let bounds = main
+        .outer_size()
+        .ok()
+        .map(|size| size.to_logical::<f64>(scale));
+    let left = match bounds {
+        Some(size) => left.clamp(
+            origin.x,
+            (origin.x + size.width - width - 4.0).max(origin.x),
+        ),
+        None => left,
+    };
+    let top = match bounds {
+        Some(size) => top.clamp(
+            origin.y,
+            (origin.y + size.height - height - 4.0).max(origin.y),
+        ),
+        None => top,
+    };
+
+    let menu = tab_menu_window(app)?;
+    menu.set_size(LogicalSize::new(width, height))
+        .and_then(|_| menu.set_position(LogicalPosition::new(left, top)))
+        .map_err(|err| Failure::new(FailureCode::Internal, format!("放置菜单失败：{err}")))?;
+    if let Ok(mut last) = TAB_MENU_LAST_SIZE.lock() {
+        *last = Some((width, height));
+    }
     menu.show()
         .and_then(|_| menu.set_focus())
         .map_err(|err| Failure::new(FailureCode::Internal, format!("显示菜单失败：{err}")))?;
     Ok(())
+}
+
+/// The page reports the bounds it just rendered; this is what sizes the popup.
+#[tauri::command]
+pub async fn tab_menu_measured(app: AppHandle, width: f64, height: f64) -> Result<(), Failure> {
+    let generation = TAB_MENU_OPEN
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|open| open.generation));
+    match generation {
+        Some(generation) => reveal_tab_menu(&app, generation, Some((width, height))),
+        None => Ok(()),
+    }
+}
+
+/// Hide the popup after a selection or a dismissal. Hiding keeps the warm
+/// WebView2; the next open is a show, not a creation. Async like every command
+/// that touches a window, so the call is dispatched off the webview thread.
+#[tauri::command]
+pub async fn hide_tab_menu(app: AppHandle) -> Result<(), Failure> {
+    if let Ok(mut pending) = TAB_MENU_PENDING.lock() {
+        *pending = None;
+    }
+    // Dropping the open also invalidates any measurement still on its way: a
+    // dismissed menu must not be revived by its own report.
+    if let Ok(mut open) = TAB_MENU_OPEN.lock() {
+        *open = None;
+    }
+    if let Some(menu) = app.get_webview_window(TAB_MENU_LABEL) {
+        let _ = menu.hide();
+    }
+    Ok(())
+}
+
+/// The payload of the menu being shown, or `None`. The page pulls this once on
+/// load so an open that raced the document cannot be missed.
+#[tauri::command]
+pub fn tab_menu_state() -> Option<TabMenuPayload> {
+    TAB_MENU_PENDING
+        .lock()
+        .ok()
+        .and_then(|pending| pending.clone())
 }
 
 /// The popup's only job is to report which item was chosen; the strip executes
@@ -869,10 +1214,7 @@ pub struct TabDiagnostics {
 }
 
 #[tauri::command]
-pub async fn tab_diagnostics(
-    state: Shared<'_>,
-    tab_id: String,
-) -> Result<TabDiagnostics, Failure> {
+pub async fn tab_diagnostics(state: Shared<'_>, tab_id: String) -> Result<TabDiagnostics, Failure> {
     let (tabs, _active) = state.manager.snapshot().await;
     let view = tabs
         .into_iter()
@@ -914,7 +1256,11 @@ pub async fn tab_failure_detail(
     let (tabs, _active) = state.manager.snapshot().await;
     let view = tabs.into_iter().find(|view| view.id == tab_id);
     let (failure, workspace, runtime_label) = match view {
-        Some(view) => (view.failure.clone(), view.workspace.clone(), view.runtime.clone()),
+        Some(view) => (
+            view.failure.clone(),
+            view.workspace.clone(),
+            view.runtime.clone(),
+        ),
         None => (None, None, None),
     };
     let log_tail = state.manager.log_tail(&tab_id).await;
@@ -1041,7 +1387,10 @@ pub async fn list_runtimes(state: Shared<'_>) -> Result<Vec<RuntimeOption>, Fail
 pub async fn set_extra_binary(state: Shared<'_>, path: String) -> Result<(), Failure> {
     let binary = PathBuf::from(&path);
     if !binary.is_file() {
-        return Err(Failure::new(FailureCode::WorkspaceMissing, "该路径不是文件"));
+        return Err(Failure::new(
+            FailureCode::WorkspaceMissing,
+            "该路径不是文件",
+        ));
     }
     // Adoption requires proof: `--version` parses and `web --help` advertises the
     // flags dshell passes. A user can easily point at an old, patched or
@@ -1079,17 +1428,18 @@ pub async fn managed_install_add(
 ) -> Result<ManagedInstall, Failure> {
     let path = PathBuf::from(&root);
     if !path.is_dir() {
-        return Err(Failure::new(FailureCode::WorkspaceMissing, "该路径不是目录"));
+        return Err(Failure::new(
+            FailureCode::WorkspaceMissing,
+            "该路径不是目录",
+        ));
     }
     let Some(mode) = runtime::detect_managed_mode(&path) else {
-        return Err(Failure::new(
-            FailureCode::NpxInstallFailed,
-            "该目录里没有找到 DSH",
-        )
-        .with_detail(
-            "期望存在 node_modules/@deepseek-ai/dsh，或是一个包含 \
+        return Err(
+            Failure::new(FailureCode::NpxInstallFailed, "该目录里没有找到 DSH").with_detail(
+                "期望存在 node_modules/@deepseek-ai/dsh，或是一个包含 \
              pnpm-workspace.yaml 的源码 checkout。",
-        ));
+            ),
+        );
     };
     let install = ManagedInstall {
         id: crate::root::slug(&path.to_string_lossy()),
@@ -1193,7 +1543,10 @@ pub struct LocalRuntimeState {
 }
 
 #[tauri::command]
-pub async fn local_runtime_status(app: AppHandle, deep: Option<bool>) -> Result<LocalRuntimeState, Failure> {
+pub async fn local_runtime_status(
+    app: AppHandle,
+    deep: Option<bool>,
+) -> Result<LocalRuntimeState, Failure> {
     let state = state_of(&app)?;
     Ok(runtime_state(&state, deep.unwrap_or(false)).await)
 }
@@ -1261,7 +1614,8 @@ async fn runtime_state(state: &AppState, deep: bool) -> LocalRuntimeState {
     let container = config.source_container_dir(&state.data_root.path);
     let root = config.source_checkout_dir(&state.data_root.path);
     let git = crate::runtime::node::find_git().await;
-    let status = crate::runtime::source::status(&root, git.as_ref().map(|(path, _)| path.as_path())).await;
+    let status =
+        crate::runtime::source::status(&root, git.as_ref().map(|(path, _)| path.as_path())).await;
     let pnpm = crate::runtime::node::find_pnpm(node.as_ref())
         .await
         .map(|(_, version)| version);
@@ -1307,7 +1661,9 @@ async fn runtime_state(state: &AppState, deep: bool) -> LocalRuntimeState {
         let Some(origin) = running.origin.clone() else {
             continue;
         };
-        let known = instances.iter_mut().find(|instance| instance.origin == origin);
+        let known = instances
+            .iter_mut()
+            .find(|instance| instance.origin == origin);
         match known {
             Some(instance) => {
                 instance.tab_id = Some(running.tab_id.clone());
@@ -1342,7 +1698,12 @@ async fn runtime_state(state: &AppState, deep: bool) -> LocalRuntimeState {
         }
     }
 
-    LocalRuntimeState { npx, source, instances, running_local }
+    LocalRuntimeState {
+        npx,
+        source,
+        instances,
+        running_local,
+    }
 }
 
 /// `npm view @deepseek-ai/dsh dist-tags`, cached for a few minutes.
@@ -1452,13 +1813,9 @@ pub async fn prepare_runtime(
             // own: keep the headline on "download" unless something better was
             // reported, and let the page show the tail as a log.
             let forward = |line: String| report("output", &line);
-            let version = crate::runtime::npxcache::warm(
-                &npx,
-                &config.package_spec(),
-                &cache,
-                &forward,
-            )
-            .await?;
+            let version =
+                crate::runtime::npxcache::warm(&npx, &config.package_spec(), &cache, &forward)
+                    .await?;
             report("done", &format!("npx 准备完成（{version}）"));
         }
         "source" => {
@@ -1473,11 +1830,10 @@ pub async fn prepare_runtime(
             let config = if let Some(chosen) = &chosen {
                 let path = PathBuf::from(chosen);
                 if !path.is_absolute() {
-                    return Err(Failure::new(
-                        FailureCode::SourceMissing,
-                        "安装位置必须是绝对路径",
-                    )
-                    .with_detail(format!("收到：{chosen}")));
+                    return Err(
+                        Failure::new(FailureCode::SourceMissing, "安装位置必须是绝对路径")
+                            .with_detail(format!("收到：{chosen}")),
+                    );
                 }
                 state
                     .update_config(|config| {
@@ -1498,7 +1854,8 @@ pub async fn prepare_runtime(
                 ),
             );
             let outcome =
-                crate::runtime::source::prepare(&root, crate::config::DSH_REPO_URL, &report).await?;
+                crate::runtime::source::prepare(&root, crate::config::DSH_REPO_URL, &report)
+                    .await?;
             if let Some(notice) = &outcome.notice {
                 report("notice", notice);
             }
@@ -1781,7 +2138,12 @@ mod tests {
         }"#;
         let parsed: NewTabRequest = serde_json::from_str(json).expect("attach payload must parse");
         match parsed {
-            NewTabRequest::Attach { url, remote, allow_plaintext, label } => {
+            NewTabRequest::Attach {
+                url,
+                remote,
+                allow_plaintext,
+                label,
+            } => {
                 assert_eq!(url, "http://127.0.0.1:3080/?token=x");
                 assert!(!remote);
                 assert!(!allow_plaintext);
@@ -1805,7 +2167,10 @@ mod tests {
         let failure = instance_already_running(&running);
         assert_eq!(failure.code, FailureCode::InstanceAlreadyRunning);
         assert!(failure.detail.as_deref().unwrap_or("").contains("本地"));
-        assert!(failure.actions.iter().any(|action| action.id == "confirm-existing"));
+        assert!(failure
+            .actions
+            .iter()
+            .any(|action| action.id == "confirm-existing"));
         assert!(failure.actions.iter().any(|action| action.id == "activate"));
     }
 }

@@ -15,25 +15,30 @@
 
 import { api, asFailure, events, listen, win } from './ipc';
 import { Store } from './store';
-import type { PageKind, TabPhase, TabView } from './types';
+import type {
+  PageKind,
+  TabAttention,
+  TabMenuTheme,
+  TabPhase,
+  TabTheme,
+  TabView,
+} from './types';
 
 const strip = document.getElementById('tabstrip') as HTMLElement;
 const controls = document.getElementById('window-controls') as HTMLElement;
 
 const store = new Store();
 
-interface TabTheme {
-  tabId: string;
-  background: string;
-  foreground: string;
-  mode: 'dark' | 'light';
-}
-
 /** Latest DSH sidebar surface reported by each content tab. */
 const tabThemes = new Map<string, TabTheme>();
 
+/** The tab being renamed, if the inline editor is open. */
 let renaming: string | null = null;
 let renameValue = '';
+/** The live editor. Kept outside `render()`'s tree so tab refreshes cannot
+ *  remove it (or blur it) while the user is typing. */
+let renameInput: HTMLInputElement | null = null;
+
 
 // ------------------------------------------------------------------ helpers
 
@@ -70,14 +75,35 @@ function tabIcon(tab: TabView): string | null {
   return kind ? (PAGE_ICON[kind] ?? null) : null;
 }
 
-function dotClass(phase: TabPhase): string {
-  switch (phase) {
+/**
+ * The tab dot's single class.
+ *
+ * Session attention outranks readiness: a tab can be perfectly `ready` and
+ * still have a session waiting for an answer or a turn that finished while the
+ * user was elsewhere. Error > needs input > completed, matching DSH's own row
+ * priority. The jump animation is reserved for those three states, so a static
+ * green dot always means "nothing to confirm".
+ */
+function dotClass(tab: TabView): string {
+  switch (tab.attention) {
+    case 'error':
+      return 'tab__dot--failed tab__dot--jump';
+    case 'needsInput':
+      return 'tab__dot--attention-input tab__dot--jump';
+    case 'completed':
+      return 'tab__dot--attention-done tab__dot--jump';
+    default:
+      break;
+  }
+  switch (tab.phase) {
     case 'ready':
       return 'tab__dot--ready';
     case 'failed':
       return 'tab__dot--failed';
     case 'exited':
       return 'tab__dot--exited';
+    case 'needsToken':
+      return 'tab__dot--attention-input';
     case 'preparing':
     case 'starting':
     case 'waitingForReady':
@@ -85,6 +111,24 @@ function dotClass(phase: TabPhase): string {
     default:
       return 'tab__dot--idle';
   }
+}
+
+const ATTENTION_LABEL: Record<TabAttention, string> = {
+  error: '出错',
+  needsInput: '需要输入',
+  completed: '已完成（未查看）',
+};
+
+function attentionLine(tab: TabView): string | null {
+  if (!tab.attention) return null;
+  const counts = tab.attentionCounts;
+  if (!counts) return `会话：${ATTENTION_LABEL[tab.attention]}`;
+  const parts: string[] = [];
+  if (counts.error > 0) parts.push(`出错 ${counts.error}`);
+  if (counts.needsInput > 0) parts.push(`需要输入 ${counts.needsInput}`);
+  if (counts.completed > 0) parts.push(`已完成 ${counts.completed}`);
+  if (counts.running > 0) parts.push(`运行中 ${counts.running}`);
+  return `会话：${ATTENTION_LABEL[tab.attention]}${parts.length > 0 ? `（${parts.join('，')}）` : ''}`;
 }
 
 const PHASE_LABEL: Record<TabPhase, string> = {
@@ -100,6 +144,8 @@ const PHASE_LABEL: Record<TabPhase, string> = {
 
 function tooltip(tab: TabView): string {
   const lines = [`${tab.title}  ·  ${PHASE_LABEL[tab.phase] ?? tab.phase}`, `类型：${tab.badge}`];
+  const attention = attentionLine(tab);
+  if (attention) lines.push(attention);
   if (!tab.closable) lines.push('首次配置完成前不能关闭');
   if (tab.origin) lines.push(`地址：${tab.origin}`);
   if (tab.workspace) lines.push(`起始目录：${tab.workspace}`);
@@ -118,6 +164,11 @@ function tooltip(tab: TabView): string {
 // -------------------------------------------------------------------- render
 
 function render() {
+  // An inline rename owns the DOM while it is open. Store refreshes arrive
+  // every few seconds (and on every tab event); rebuilding the strip under the
+  // caret is what used to blur the input and commit a half-typed name.
+  if (renaming !== null) return;
+
   const { tabs, activeId } = store.state;
   strip.innerHTML = '';
 
@@ -133,36 +184,14 @@ function render() {
 
     const icon = tabIcon(tab);
     if (icon) el.appendChild(h('span', { class: 'tab__icon', text: icon }));
-    else el.appendChild(h('span', { class: `tab__dot ${dotClass(tab.phase)}` }));
+    else el.appendChild(h('span', { class: `tab__dot ${dotClass(tab)}` }));
 
-    if (renaming === tab.id) {
-      const input = h('input', { class: 'tab__rename', type: 'text', value: renameValue }) as HTMLInputElement;
-      input.addEventListener('keydown', (event) => {
-        const key = (event as KeyboardEvent).key;
-        if (key === 'Enter') void commitRename();
-        if (key === 'Escape') {
-          renaming = null;
-          render();
-        }
-        event.stopPropagation();
-      });
-      input.addEventListener('blur', () => void commitRename());
-      input.addEventListener('input', () => {
-        renameValue = input.value;
-      });
-      el.appendChild(input);
-      window.setTimeout(() => {
-        input.focus();
-        input.select();
-      }, 0);
-    } else {
-      el.appendChild(
-        h('span', {
-          class: 'tab__title',
-          text: (tab.phase === 'failed' ? '⚠ ' : '') + (tab.title || '未命名'),
-        }),
-      );
-    }
+    el.appendChild(
+      h('span', {
+        class: 'tab__title',
+        text: (tab.phase === 'failed' ? '⚠ ' : '') + (tab.title || '未命名'),
+      }),
+    );
 
     if (tab.plaintext) {
       el.appendChild(h('span', { class: 'tab__warn', text: '⚠', title: '此连接未加密（明文 HTTP）' }));
@@ -209,15 +238,13 @@ function render() {
       // Page titles are fixed — Rust rejects the rename anyway, so do not offer
       // the editing affordance for them.
       if (isPage) return;
-      renaming = tab.id;
-      renameValue = tab.title;
-      render();
+      beginTabRename(tab.id);
     });
     el.addEventListener('contextmenu', (event) => {
       event.preventDefault();
       const { clientX, clientY } = event as MouseEvent;
       void api
-        .showTabMenu(tab.id, clientX, clientY)
+        .showTabMenu(tab.id, clientX, clientY, menuTheme(tab.id))
         .catch((error) => store.toast(asFailure(error).message, true));
     });
     el.addEventListener('dragstart', (event) => {
@@ -277,7 +304,7 @@ function render() {
           const last = tabs[tabs.length - 1];
           if (last) {
             void api
-              .showTabMenu(last.id, 12, 44)
+              .showTabMenu(last.id, 12, 44, menuTheme(last.id))
               .catch((error) => store.toast(asFailure(error).message, true));
           }
         },
@@ -358,12 +385,120 @@ function pruneTabThemes(): void {
   }
 }
 
+/**
+ * The menu wears the DSH surface of the tab it belongs to. A tab that has not
+ * reported a theme yet leaves this undefined, and the popup keeps its own
+ * default instead of flashing a colour from another tab.
+ */
+function menuTheme(tabId: string): TabMenuTheme | undefined {
+  const theme = tabThemes.get(tabId);
+  return theme === undefined
+    ? undefined
+    : { background: theme.background, foreground: theme.foreground, mode: theme.mode };
+}
+
+/**
+ * Open the inline editor over one tab's title.
+ *
+ * The editor is inserted into the existing tab element and `render()` then
+ * stands still until it closes. That is the whole reason the input can survive
+ * a tab refresh: it is not rebuilt on every store event, which is what used to
+ * blur it (and therefore commit a half-typed name) within seconds.
+ */
 function beginTabRename(tabId: string): void {
   const tab = store.state.tabs.find((candidate) => candidate.id === tabId);
   if (!tab || tab.pageKind) return;
+  if (renaming !== null) finishRename(false);
+
+  const tabEl = Array.from(strip.querySelectorAll<HTMLElement>('.tab')).find(
+    (candidate) => candidate.dataset.tabId === tabId,
+  );
+  const title = tabEl?.querySelector<HTMLElement>('.tab__title');
+  if (!tabEl || !title) {
+    // A menu action can land between a state change and its render; make sure
+    // the DOM reflects the store before asking it for the title element.
+    render();
+    beginTabRename(tabId);
+    return;
+  }
+
   renaming = tabId;
   renameValue = tab.title;
+
+  const input = h('input', {
+    class: 'tab__rename',
+    type: 'text',
+    value: renameValue,
+    maxlength: '64',
+    spellcheck: 'false',
+    autocomplete: 'off',
+  }) as HTMLInputElement;
+  renameInput = input;
+
+  input.addEventListener('keydown', (event) => {
+    // An IME candidate window owns Enter/Escape while it is composing; the
+    // first Enter that reaches us must be the one that confirms the name.
+    if ((event as KeyboardEvent).isComposing) return;
+    const key = (event as KeyboardEvent).key;
+    if (key === 'Enter') {
+      event.preventDefault();
+      finishRename(true);
+    } else if (key === 'Escape') {
+      event.preventDefault();
+      finishRename(false);
+    }
+    // Keep Ctrl+W / Ctrl+T / tab cycling out of the editor while it is open.
+    event.stopPropagation();
+  });
+  input.addEventListener('input', () => {
+    renameValue = input.value;
+  });
+  input.addEventListener('blur', () => {
+    const editing = renaming;
+    window.setTimeout(() => {
+      if (renaming !== editing || renameInput !== input) return;
+      if (document.activeElement === input) return;
+      // Losing the whole window (the tab-menu popup is its own window) is not
+      // the user leaving the editor. Keep it open; the window `focus` handler
+      // below puts the caret back.
+      if (!document.hasFocus()) return;
+      finishRename(true);
+    }, 120);
+  });
+
+  title.replaceWith(input);
+  input.focus();
+  input.select();
+  // The tab menu is a separate window. Handing focus to the strip explicitly
+  // means the editor receives keystrokes even if the popup has not fully
+  // hidden yet.
+  void api.focusChrome().catch(() => undefined);
+}
+
+/**
+ * Close the editor and optionally save the typed name.
+ *
+ * The input is detached before the repaint so its own `blur` cannot re-enter
+ * this function, and the tab title is updated optimistically so the strip does
+ * not flash the old name while the command is in flight.
+ */
+function finishRename(save: boolean): void {
+  const id = renaming;
+  const value = renameValue.trim();
+  const input = renameInput;
+  renaming = null;
+  renameInput = null;
+
+  if (input) {
+    input.value = renameValue;
+    input.remove();
+  }
+  if (id && save && value) {
+    const tab = store.state.tabs.find((candidate) => candidate.id === id);
+    if (tab) tab.title = value;
+  }
   render();
+  if (id && save && value) void store.rename(id, value);
 }
 
 /**
@@ -403,14 +538,6 @@ function performTabMenuAction(tabId: string, action: string): void {
     default:
       break;
   }
-}
-
-async function commitRename() {
-  const id = renaming;
-  const value = renameValue.trim();
-  renaming = null;
-  render();
-  if (id && value) await store.rename(id, value);
 }
 
 // ----------------------------------------------------------------- shortcuts
@@ -464,6 +591,12 @@ function installShortcuts() {
         }
         break;
     }
+  });
+
+  // The tab-menu popup is a different window. When it closes, the strip gets
+  // focus back; an editor that was open before the popup must keep its caret.
+  window.addEventListener('focus', () => {
+    if (renaming !== null && renameInput) renameInput.focus();
   });
 
   // Rust re-emits accelerators that arrive while a DSH content webview has focus,

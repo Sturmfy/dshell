@@ -1,17 +1,15 @@
-import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+// The tab strip's context menu.
+//
+// It is one long-lived window, created before the first right-click and then
+// only shown, moved and hidden: a fresh window per open meant a fresh WebView2
+// environment (browser process, renderer, document load) on the interaction
+// path, which is what made the menu feel slow. The popup therefore owns no
+// per-open state of its own — it pulls the current payload on load and listens
+// for later opens, so an open that raced the document still lands.
+
+import { api, events, listen } from './ipc';
+import type { TabMenuPayload, TabMenuTheme } from './types';
 import './menu.css';
-
-interface TabMenuPayload {
-  tabId: string;
-  page: boolean;
-}
-
-declare global {
-  interface Window {
-    __DSHELL_TAB_MENU__?: TabMenuPayload;
-  }
-}
 
 type Entry =
   | { kind: 'item'; action: string; label: string; danger?: boolean }
@@ -29,6 +27,18 @@ const ICONS: Record<string, string> = {
     '<rect x="3" y="5" width="8" height="8" rx="1"/><path d="M5 3h6l2 2v6"/>',
   close: '<path d="M4 4l8 8"/><path d="M12 4l-8 8"/>',
 };
+
+/** The theme custom properties the popup repaints when an open carries one. */
+const THEME_VARS = ['--bg', '--fg', '--muted', '--hover', '--border', '--sep', '--danger'] as const;
+
+const root = document.getElementById('menu');
+
+/** The payload behind the menu currently on screen. */
+let current: TabMenuPayload | null = null;
+/** The pending blur dismissal, if the popup has just lost focus. */
+let hideTimer: number | undefined;
+/** When the current open stops being cancellable by a blur it caused itself. */
+let armedAt = 0;
 
 function entriesFor(payload: TabMenuPayload): Entry[] {
   if (payload.page) {
@@ -51,30 +61,69 @@ function icon(action: string): string {
   return `<span class="item__icon"><svg viewBox="0 0 16 16" aria-hidden="true">${ICONS[action] ?? ''}</svg></span>`;
 }
 
-/**
- * Close the popup as a Tauri window, not with the browser's `window.close()`.
- *
- * `window.close()` reaches wry as a WebView2 `WindowCloseRequested` event, and
- * wry answers that by destroying only the webview container. The transparent,
- * always-on-top Tauri window then survives with no content: a ghost panel left
- * over the strip. The window plugin's close command destroys the native window
- * itself, which is the thing this popup actually is.
- */
-function closeMenu(): void {
-  void getCurrentWindow()
-    .close()
-    .catch(() => {
-      // Closing tears down the channel that would deliver this promise's result;
-      // a rejection here only means there is no window left to report to.
-    });
+function cancelHide(): void {
+  if (hideTimer !== undefined) {
+    window.clearTimeout(hideTimer);
+    hideTimer = undefined;
+  }
 }
 
-function mount(payload: TabMenuPayload): void {
-  const root = document.getElementById('menu');
-  if (!root) {
-    closeMenu();
+/**
+ * Hide the popup, never close it.
+ *
+ * `close` destroys the window, which is the cost this whole file exists to
+ * avoid: Tauri would build a new WebView2 for the next right-click. Hiding also
+ * clears the pending payload on the Rust side, so a popup reloaded later cannot
+ * resurrect a stale menu.
+ */
+function hide(): void {
+  cancelHide();
+  void api.hideTabMenu().catch(() => undefined);
+}
+
+/**
+ * Paint the popup in the DSH surface of the tab that opened it.
+ *
+ * The window is transparent and cannot sample the page behind it, so the menu
+ * uses the sidebar colour itself rather than the menu's translucent material;
+ * hairlines and hover fills are derived from the reported foreground exactly
+ * like the strip derives its active-tab border.
+ */
+function applyTheme(theme: TabMenuTheme | undefined): void {
+  const style = document.documentElement.style;
+  if (theme === undefined) {
+    for (const name of THEME_VARS) style.removeProperty(name);
+    style.removeProperty('color-scheme');
     return;
   }
+  const dark = theme.mode !== 'light';
+  const foreground = theme.foreground;
+  style.setProperty('color-scheme', dark ? 'dark' : 'light');
+  // Dark surfaces lift the menu off the page; a light sidebar is already the
+  // menu's own colour, and darkening it would read as a pressed row.
+  style.setProperty(
+    '--bg',
+    dark ? `color-mix(in srgb, ${theme.background} 88%, ${foreground} 12%)` : theme.background,
+  );
+  style.setProperty('--fg', foreground);
+  style.setProperty('--muted', `color-mix(in srgb, ${foreground} 62%, transparent)`);
+  style.setProperty('--hover', `color-mix(in srgb, ${foreground} 10%, transparent)`);
+  style.setProperty('--border', `color-mix(in srgb, ${foreground} 16%, transparent)`);
+  style.setProperty('--sep', `color-mix(in srgb, ${foreground} 14%, transparent)`);
+  style.setProperty('--danger', dark ? '#ff7a7a' : '#c62828');
+}
+
+/** Build one open's row set. The popup is reused, so every open starts clean. */
+function render(payload: TabMenuPayload): void {
+  if (!root) {
+    hide();
+    return;
+  }
+  current = payload;
+  cancelHide();
+  armedAt = performance.now() + 400;
+  applyTheme(payload.theme);
+  root.replaceChildren();
 
   const buttons: HTMLButtonElement[] = [];
   for (const entry of entriesFor(payload)) {
@@ -92,7 +141,7 @@ function mount(payload: TabMenuPayload): void {
     button.innerHTML = `${icon(entry.action)}<span class="item__label"></span>`;
     const label = button.querySelector('.item__label');
     if (label) label.textContent = entry.label;
-    button.addEventListener('click', () => void choose(entry.action));
+    button.addEventListener('click', () => choose(entry.action));
     root.appendChild(button);
     buttons.push(button);
   }
@@ -111,43 +160,58 @@ function mount(payload: TabMenuPayload): void {
     });
   });
 
-  const armedAt = performance.now() + 400;
-  window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeMenu();
-    }
-  });
-  window.addEventListener('blur', () => {
-    window.setTimeout(() => {
-      if (performance.now() >= armedAt) closeMenu();
-    }, 100);
-  });
-  window.addEventListener('contextmenu', (event) => event.preventDefault());
-  document.addEventListener('mousedown', (event) => {
-    if (event.target === document.body) closeMenu();
-  });
+  // The window is sized around the rows, not around a guess: report what the
+  // panel actually rendered. Rust keeps the popup hidden until this lands, so
+  // the first painted menu is already the right size.
+  const bounds = root.getBoundingClientRect();
+  if (bounds.width >= 1 && bounds.height >= 1) {
+    void api
+      .tabMenuMeasured(Math.ceil(bounds.width), Math.ceil(bounds.height))
+      .catch(() => undefined);
+  }
 
   window.focus();
   buttons[0]?.focus();
 }
 
 async function choose(action: string): Promise<void> {
-  const payload = window.__DSHELL_TAB_MENU__;
-  if (!payload) {
-    closeMenu();
-    return;
-  }
-  try {
-    await invoke('tab_menu_choose', { tabId: payload.tabId, action });
-  } finally {
-    closeMenu();
-  }
+  const payload = current;
+  hide();
+  if (!payload) return;
+  // The strip owns the action (and its toast); a failure there is reported by
+  // the strip, not by this closing popup.
+  await api.tabMenuChoose(payload.tabId, action).catch(() => undefined);
 }
 
-const payload = window.__DSHELL_TAB_MENU__;
-if (payload) {
-  mount(payload);
-} else {
-  closeMenu();
-}
+// Once-only wiring: the popup survives across opens, so these must not be
+// re-registered per render.
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    hide();
+  }
+});
+window.addEventListener('blur', () => {
+  // Showing the popup and handing it focus can blur it for a moment; the
+  // arming window keeps an open from closing itself before it is usable. A new
+  // open cancels a pending timer, so clicking the next tab's menu is not
+  // swallowed by the previous one's dismissal.
+  cancelHide();
+  hideTimer = window.setTimeout(() => {
+    hideTimer = undefined;
+    if (performance.now() >= armedAt) hide();
+  }, 100);
+});
+window.addEventListener('contextmenu', (event) => event.preventDefault());
+document.addEventListener('mousedown', (event) => {
+  if (event.target === document.body) hide();
+});
+
+void listen<TabMenuPayload>(events.tabMenuOpen, (payload) => render(payload));
+
+// A payload may already be waiting: the menu can be opened before this document
+// has finished loading. Pulling it after the listener is live leaves no gap.
+void (async () => {
+  const pending = await api.tabMenuState().catch(() => null);
+  if (pending) render(pending);
+})();

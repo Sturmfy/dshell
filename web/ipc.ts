@@ -18,6 +18,8 @@ import type {
   RunningInstance,
   RuntimeOption,
   TabFailureDetail,
+  TabMenuPayload,
+  TabMenuTheme,
   TabView,
 } from './types';
 
@@ -30,8 +32,12 @@ export const events = {
   shortcut: 'dshell://shortcut',
   /** Styled tab menu selection: `{ tabId, action }`. */
   tabMenu: 'dshell://tab-menu',
+  /** The reused tab-menu popup's own open payload. */
+  tabMenuOpen: 'dshell://tab-menu-open',
   /** DSH sidebar surface for one content tab. */
   tabTheme: 'dshell://tab-theme',
+  /** The whole config after a change made outside the settings page. */
+  configChanged: 'dshell://config-changed',
 } as const;
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -88,8 +94,18 @@ export const api = {
   reorderTabs: (tabIds: string[]) => invoke<void>('reorder_tabs', { tabIds }),
   restartTab: (tabId: string) => invoke<void>('restart_tab', { tabId }),
   reloadTab: (tabId: string) => invoke<void>('reload_tab', { tabId }),
-  showTabMenu: (tabId: string, x: number, y: number) =>
-    invoke<void>('show_tab_menu', { tabId, x, y }),
+  showTabMenu: (tabId: string, x: number, y: number, theme?: TabMenuTheme) =>
+    invoke<void>('show_tab_menu', { tabId, x, y, theme: theme ?? null }),
+  /** Hide (never close) the reused popup; the next open is a show. */
+  hideTabMenu: () => invoke<void>('hide_tab_menu'),
+  /** The payload of the menu being shown, for a popup that loaded late. */
+  tabMenuState: () => invoke<TabMenuPayload | null>('tab_menu_state'),
+  /** The popup's rendered size, so Rust can size the window to its content. */
+  tabMenuMeasured: (width: number, height: number) =>
+    invoke<void>('tab_menu_measured', { width, height }),
+  /** Hand one selection to the strip, which owns the action and its toast. */
+  tabMenuChoose: (tabId: string, action: string) =>
+    invoke<void>('tab_menu_choose', { tabId, action }),
   clearTabData: (tabId: string) => invoke<void>('clear_tab_data', { tabId }),
   focusChrome: () => invoke<void>('focus_chrome'),
   openInSystemBrowser: (tabId: string) => invoke<void>('open_in_system_browser', { tabId }),

@@ -79,6 +79,19 @@ enum BridgeRequest {
         foreground: String,
         mode: String,
     },
+    /// Counts of the session-row states DSH already paints: error, waiting for
+    /// the user, finished-but-unread, and running.
+    SessionAttention {
+        v: u8,
+        #[serde(default)]
+        error: u32,
+        #[serde(default, rename = "needsInput")]
+        needs_input: u32,
+        #[serde(default)]
+        completed: u32,
+        #[serde(default)]
+        running: u32,
+    },
 }
 
 impl BridgeRequest {
@@ -87,7 +100,8 @@ impl BridgeRequest {
             Self::PickDirectory { v, .. }
             | Self::HostPaths { v, .. }
             | Self::Ready { v, .. }
-            | Self::Theme { v, .. } => *v,
+            | Self::Theme { v, .. }
+            | Self::SessionAttention { v, .. } => *v,
         }
     }
 }
@@ -99,6 +113,9 @@ pub struct ContentBridge {
     app: AppHandle,
     label: String,
     origin: Arc<RwLock<Option<String>>>,
+    /// The user's custom tab name, when there is one. It is sent on every page
+    /// ready so a reload gets the brand replacement too, and re-sent on rename.
+    title: Arc<RwLock<Option<String>>>,
 }
 
 impl ContentBridge {
@@ -107,11 +124,17 @@ impl ContentBridge {
     /// Failure is non-fatal: the tab still works and file uploads continue.
     /// The injected script never receives `hello`, so a picker request fails
     /// fast instead of leaving DSH waiting on a dialog that cannot exist.
-    pub fn attach(app: AppHandle, webview: &Webview, label: String) -> Result<Self, String> {
+    pub fn attach(
+        app: AppHandle,
+        webview: &Webview,
+        label: String,
+        title: Option<String>,
+    ) -> Result<Self, String> {
         let bridge = Self {
             app,
             label,
             origin: Arc::new(RwLock::new(None)),
+            title: Arc::new(RwLock::new(title)),
         };
         let handler_bridge = bridge.clone();
         let error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -127,14 +150,13 @@ impl ContentBridge {
                     // is the browser's menu: filtering three browser-only
                     // commands keeps Copy/Paste and the link/image actions,
                     // which a hand-built menu would lose.
-                    let context_menu = ContextMenuRequestedEventHandler::create(Box::new(
-                        |_sender, args| {
+                    let context_menu =
+                        ContextMenuRequestedEventHandler::create(Box::new(|_sender, args| {
                             if let Some(args) = args {
                                 hide_browser_context_items(&args);
                             }
                             Ok(())
-                        },
-                    ));
+                        }));
                     let mut context_menu_token = 0;
                     if let Ok(context_core) = core.cast::<ICoreWebView2_11>() {
                         let _ = unsafe {
@@ -143,10 +165,12 @@ impl ContentBridge {
                         };
                     }
 
-                    let navigation = NavigationStartingEventHandler::create(Box::new(
-                        |_sender, args| {
+                    let navigation =
+                        NavigationStartingEventHandler::create(Box::new(|_sender, args| {
                             if let Some(args) = args {
-                                if let Ok(args) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
+                                if let Ok(args) =
+                                    args.cast::<ICoreWebView2NavigationStartingEventArgs3>()
+                                {
                                     let mut kind = COREWEBVIEW2_NAVIGATION_KIND::default();
                                     if unsafe { args.NavigationKind(&mut kind) }.is_ok()
                                         && kind == COREWEBVIEW2_NAVIGATION_KIND_BACK_OR_FORWARD
@@ -156,34 +180,31 @@ impl ContentBridge {
                                 }
                             }
                             Ok(())
-                        },
-                    ));
+                        }));
                     let mut navigation_token = 0;
                     unsafe { core.add_NavigationStarting(&navigation, &mut navigation_token) }
                         .map_err(|err| format!("add_NavigationStarting: {err}"))?;
 
-                    let accelerator = AcceleratorKeyPressedEventHandler::create(Box::new(
-                        |_sender, args| {
+                    let accelerator =
+                        AcceleratorKeyPressedEventHandler::create(Box::new(|_sender, args| {
                             if let Some(args) = args {
                                 suppress_print_accelerator(&args);
                             }
                             Ok(())
-                        },
-                    ));
+                        }));
                     let mut accelerator_token = 0;
                     unsafe {
                         controller.add_AcceleratorKeyPressed(&accelerator, &mut accelerator_token)
                     }
                     .map_err(|err| format!("add_AcceleratorKeyPressed: {err}"))?;
 
-                    let handler = WebMessageReceivedEventHandler::create(Box::new(
-                        move |sender, args| {
+                    let handler =
+                        WebMessageReceivedEventHandler::create(Box::new(move |sender, args| {
                             if let (Some(sender), Some(args)) = (sender, args) {
                                 handler_bridge.on_message(&sender, &args);
                             }
                             Ok(())
-                        },
-                    ));
+                        }));
                     let mut token = 0;
                     unsafe { core.add_WebMessageReceived(&handler, &mut token) }
                         .map_err(|err| format!("add_WebMessageReceived: {err}"))?;
@@ -211,11 +232,7 @@ impl ContentBridge {
         }
     }
 
-    fn on_message(
-        &self,
-        sender: &ICoreWebView2,
-        args: &ICoreWebView2WebMessageReceivedEventArgs,
-    ) {
+    fn on_message(&self, sender: &ICoreWebView2, args: &ICoreWebView2WebMessageReceivedEventArgs) {
         let source = unsafe {
             let mut raw = windows_core::PWSTR::null();
             match args.Source(&mut raw) {
@@ -235,12 +252,19 @@ impl ContentBridge {
                 &self.data_root(),
                 &format!("content bridge ready on {}: {features}", self.label),
             );
-            post_json(sender, &json!({ "v": PROTOCOL_VERSION, "type": "hello" }));
+            let mut hello = json!({ "v": PROTOCOL_VERSION, "type": "hello" });
+            if let Some(title) = self.title.read().ok().and_then(|slot| slot.clone()) {
+                hello["title"] = json!(title);
+            }
+            post_json(sender, &hello);
             return;
         }
         if !self.origin_allows(&source) {
             if let BridgeRequest::PickDirectory { id, .. } = &request {
-                post_json(sender, &pick_result_error(id, "bridge origin is not the current DSH tab"));
+                post_json(
+                    sender,
+                    &pick_result_error(id, "bridge origin is not the current DSH tab"),
+                );
             }
             return;
         }
@@ -258,12 +282,15 @@ impl ContentBridge {
                     ),
                 );
                 let aligned = align_paths(&keys, paths);
-                post_json(sender, &json!({
-                    "v": PROTOCOL_VERSION,
-                    "type": "hostPathsResult",
-                    "id": id,
-                    "paths": aligned,
-                }));
+                post_json(
+                    sender,
+                    &json!({
+                        "v": PROTOCOL_VERSION,
+                        "type": "hostPathsResult",
+                        "id": id,
+                        "paths": aligned,
+                    }),
+                );
             }
             BridgeRequest::Ready { .. } => {}
             BridgeRequest::Theme {
@@ -272,7 +299,66 @@ impl ContentBridge {
                 mode,
                 ..
             } => self.report_theme(&background, &foreground, &mode),
+            BridgeRequest::SessionAttention {
+                error,
+                needs_input,
+                completed,
+                running,
+                ..
+            } => self.report_attention(error, needs_input, completed, running),
         }
+    }
+
+    /// Store the custom tab name and tell the page to paint it over DSH's
+    /// top-left brand. Called on rename; page loads get it through `hello`.
+    pub fn set_title(&self, title: &str) {
+        let title = title.trim();
+        if let Ok(mut slot) = self.title.write() {
+            *slot = (!title.is_empty()).then(|| title.to_string());
+        }
+        self.post(&json!({
+            "v": PROTOCOL_VERSION,
+            "type": "title",
+            "title": title,
+        }));
+    }
+
+    /// Hand the page's session counts to the tab manager.
+    ///
+    /// The WebView2 message callback is synchronous, and the manager needs
+    /// async locks, so the update is spawned. Counts are bounded here: the page
+    /// is trusted only to describe its own UI, never to allocate unbounded
+    /// labels or numbers.
+    fn report_attention(&self, error: u32, needs_input: u32, completed: u32, running: u32) {
+        const LIMIT: u32 = 10_000;
+        if [error, needs_input, completed, running]
+            .iter()
+            .any(|count| *count > LIMIT)
+        {
+            return;
+        }
+        let tab_id = self
+            .label
+            .strip_prefix("tab-")
+            .unwrap_or(&self.label)
+            .to_string();
+        let app = self.app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Some(state) = app.try_state::<Arc<crate::state::AppState>>() {
+                state
+                    .manager
+                    .set_session_attention(
+                        &tab_id,
+                        crate::tabs::state::SessionAttention {
+                            error,
+                            needs_input,
+                            completed,
+                            running,
+                        },
+                    )
+                    .await;
+            }
+        });
     }
 
     fn report_theme(&self, background: &str, foreground: &str, mode: &str) {
@@ -360,7 +446,7 @@ fn pick_result_error(id: &str, message: &str) -> Value {
 
 /// Colors cross the bridge into a CSS custom property, so accept only the
 /// computed forms DSH actually produces (never arbitrary CSS text).
-fn is_safe_css_color(value: &str) -> bool {
+pub(crate) fn is_safe_css_color(value: &str) -> bool {
     let value = value.trim();
     value.len() <= 64
         && (value.starts_with('#')
@@ -481,7 +567,8 @@ fn read_message(args: &ICoreWebView2WebMessageReceivedEventArgs) -> String {
 
 /// Whether `source` is the same scheme/host/port as the tab's DSH origin.
 fn same_origin(source: &str, expected: &str) -> bool {
-    let (Ok(source), Ok(expected)) = (tauri::Url::parse(source), tauri::Url::parse(expected)) else {
+    let (Ok(source), Ok(expected)) = (tauri::Url::parse(source), tauri::Url::parse(expected))
+    else {
         return false;
     };
     source.scheme() == expected.scheme()
@@ -536,16 +623,14 @@ mod tests {
 
     #[test]
     fn parses_both_requests_and_ready() {
-        let pick: BridgeRequest = parse_request(
-            r#"{"v":1,"type":"pickDirectory","id":"a","initial":null}"#,
-        )
-        .expect("pick request");
+        let pick: BridgeRequest =
+            parse_request(r#"{"v":1,"type":"pickDirectory","id":"a","initial":null}"#)
+                .expect("pick request");
         assert!(matches!(pick, BridgeRequest::PickDirectory { .. }));
 
-        let paths: BridgeRequest = parse_request(
-            r#"{"v":1,"type":"hostPaths","id":"b","keys":["k"]}"#,
-        )
-        .expect("host paths request");
+        let paths: BridgeRequest =
+            parse_request(r#"{"v":1,"type":"hostPaths","id":"b","keys":["k"]}"#)
+                .expect("host paths request");
         assert!(matches!(paths, BridgeRequest::HostPaths { .. }));
 
         let ready: BridgeRequest =
@@ -558,6 +643,22 @@ mod tests {
         )
         .expect("theme request");
         assert!(matches!(theme, BridgeRequest::Theme { .. }));
+
+        let attention: BridgeRequest = parse_request(
+            r#"{"v":1,"type":"sessionAttention","error":0,"needsInput":2,"completed":1,"running":0}"#,
+        )
+        .expect("session attention request");
+        match attention {
+            BridgeRequest::SessionAttention {
+                needs_input,
+                completed,
+                ..
+            } => {
+                assert_eq!(needs_input, 2);
+                assert_eq!(completed, 1);
+            }
+            _ => panic!("expected session attention"),
+        }
     }
 
     #[test]
@@ -615,6 +716,9 @@ mod tests {
             align_paths(&["a".into()], vec![Some("A".into()), Some("B".into())]),
             vec![Some("A".into())]
         );
-        assert_eq!(align_paths(&[], vec![Some("A".into())]), Vec::<Option<String>>::new());
+        assert_eq!(
+            align_paths(&[], vec![Some("A".into())]),
+            Vec::<Option<String>>::new()
+        );
     }
 }

@@ -40,6 +40,22 @@ export interface Failure {
  */
 export type PageKind = 'onboarding' | 'new' | 'settings';
 
+/**
+ * The strongest unacknowledged session state in a tab.
+ *
+ * `completed` is green, `needsInput` amber, `error` red. A dead backend is
+ * reported as `error`, and a missing launch token as `needsInput`.
+ */
+export type TabAttention = 'error' | 'needsInput' | 'completed';
+
+/** What the DSH page last reported about its session rows. */
+export interface SessionAttentionCounts {
+  error: number;
+  needsInput: number;
+  completed: number;
+  running: number;
+}
+
 export interface TabView {
   id: string;
   title: string;
@@ -60,10 +76,31 @@ export interface TabView {
   failure?: Failure | null;
   notice?: string | null;
   plaintext: boolean;
+  /** Unacknowledged session state, or null when the tab is quiet. */
+  attention?: TabAttention | null;
+  attentionCounts?: SessionAttentionCounts | null;
   hasSessionCookie: boolean;
   logPath?: string | null;
   exitCode?: number | null;
   ready: boolean;
+}
+
+/** The DSH sidebar surface a content tab reports, as the strip paints with it. */
+export interface TabTheme {
+  tabId: string;
+  background: string;
+  foreground: string;
+  mode: 'dark' | 'light';
+}
+
+/** The part of a {@link TabTheme} the tab-menu popup wears. */
+export type TabMenuTheme = Omit<TabTheme, 'tabId'>;
+
+/** What the tab-menu popup renders for one open. */
+export interface TabMenuPayload {
+  tabId: string;
+  page: boolean;
+  theme?: TabMenuTheme;
 }
 
 export interface NodeInfo {
@@ -128,6 +165,8 @@ export interface Config {
   recentConnections?: RecentConnection[];
   /** Origins pinned above the ordinary remote lists, newest pin first. */
   pinnedConnections?: string[];
+  /** User-chosen tab names, keyed by the connection's stable instance id. */
+  tabNames?: Record<string, string>;
   language: string;
   backgroundMode: string;
   fixedPort: boolean;

@@ -386,6 +386,39 @@ selector(::-webkit-scrollbar)` 闸门**：非 `auto` 的 `scrollbar-width` 会�
 dshell 无法真的 `@import` 这些样式表：它们加载在另一个 webview、另一个 origin 里，
 而 CSS 自定义属性不跨文档。抄值（而不是抄机制）是唯一的共享方式。
 
+### 选项卡名称与会话状态
+
+**用户重命名的是一个连接，而不是 DSH 的当前会话。** 名字同时写进三个地方：
+
+| 位置 | 作用 |
+|---|---|
+| `tabs.json` 的 `customTitle` | 这个选项卡自己重启后原样恢复 |
+| `config.json` 的 `tabNames[instanceKey]` | 同一 workspace/DSH_HOME（或同一 attach/remote origin）的新选项卡、以及从连接历史重连时匹配回来 |
+| DSH 页面左上角的品牌文字 | 通过 bridge 注入替换，用户看到的标题与选项卡一致 |
+
+只要 `customTitle` 存在，`on_document_title_changed` 只更新“当前会话标题”的
+记录，**不再改选项卡标题** —— 这就是“切会话后名字被换掉”的根因。
+重命名还会同步更新 `recentConnections` 里同一 origin 的 label，所以历史记录卡片
+也显示新名字。
+
+内联重命名编辑器在打开期间会**暂停选项卡条的整树重绘**：store 的 4 秒刷新、标签
+事件、主题事件都不会把输入框从 DOM 里换掉。失焦只有在“整个窗口仍有焦点”时才提交；
+弹出菜单窗口造成的失焦会保留编辑器并把焦点交还。
+
+**状态点跟随 DSH 自己的会话行，而不是只看后端进程相位。** 内容页 bridge 读取
+DSH 已经渲染的 `data-row-key="session:*"` 与状态点的 `data-state`，把
+`error / warning / done / ongoing` 聚合成计数上报。优先级固定为
+**出错 > 需要输入 > 已完成**；只有这三种“需要用户确认”的状态会让圆点做间断跳跃。
+“已完成”采用 DSH 的 `completionUnread`（用户没看过的完成），另外 Rust 还会把
+“后台运行时从 running 变为 0、且该选项卡当时不是活动页”的转换记成未读完成，
+并在用户切回该选项卡时清除。
+
+为了让后台选项卡仍然渲染 DSH 的会话行，parked webview 不再缩到 1×1：DSH 在
+视口窄于 1024px 时会自动折叠侧栏，折叠后**根本不存在** session 行。parked 尺寸
+因此固定为 **1024×1** 并移到屏幕外 —— 宽度刚好保持在断点以上，让 React 树和
+会话行挂载；高度只有 1px，后台页面几乎不参与光栅化，而 SSE、审批轮询和状态点
+仍然在跑。
+
 ### 四条代码级硬规则
 
 1. **任何操作 webview 的 command 必须是 `async fn`。** Windows 上在同步命令或
@@ -480,6 +513,17 @@ capability，因此内容页即使被导航到外部 origin，也拿不到 dshel
 - dshell 自己的 chrome 和 page tab 不需要浏览器菜单，默认右键菜单关闭。
 - 选项卡右键改为 dshell 风格的 **Tauri 弹出窗口**（`menu.html`），位置跟随
   鼠标、失焦/点击外部关闭；不再受 chrome webview 38px 高度限制，也跨平台可用。
+  这个窗口**只创建一次**：`RunEvent::Ready` 之后在后台任务里预热，之后每次右键
+  只做「下发 payload + 定位 + show」，关闭是 `hide` 而不是 `close`。此前是每次
+  右键新建一个窗口，等于把一整套 WebView2（浏览器进程、渲染进程、页面加载）放在
+  交互路径上，这是菜单"弹得慢"的根因；`CloseRequested` 被拦下改成 hide，避免
+  Alt+F4 把预热的窗口销毁。窗口尺寸也是页面自己报的：面板按 `width: max-content`
+  排出内容尺寸，渲染后 `tab_menu_measured` 交给 Rust，Rust 先 `set_size` 再
+  `show`（窗口此时仍是隐藏的），所以窗口边缘就是面板边缘，不会在下方/右侧留一圈
+  透明却挡点击的空白；页面若没来得及上报，300ms 后用上一次测到的尺寸兜底。菜单配色跟随被右键那个 tab 上报的 DSH 侧栏色
+  （`dshell://tab-theme` 的同一份数据），由 strip 随打开请求一起传给 Rust，再由
+  payload 带到菜单页；跨窗口拿不到页面的 `backdrop-filter`，所以用的是侧栏色的
+  实色近似，圆角/描边/悬停由前景色 `color-mix` 派生。
 - `NavigationStarting` 读取 `NavigationKind`，取消 `BackOrForward`，覆盖鼠标
   侧键、`Alt+Left/Right` 和任何走浏览器历史的后退/前进。
 - `Ctrl+P` 在 `AcceleratorKeyPressed` 中吞掉；**刷新和查找保留**（不关闭

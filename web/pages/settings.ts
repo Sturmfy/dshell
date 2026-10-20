@@ -21,6 +21,7 @@ import {
   pageHeader,
   pnpmCheckRow,
   pnpmInstallHint,
+  preserveView,
   row,
   section,
   toastView,
@@ -31,7 +32,14 @@ const store = new PageStore('settings');
 
 // -------------------------------------------------------------------- render
 
-function render(): void {
+/**
+ * Build the page from the store.
+ *
+ * `render` is this plus [`preserveView`]: saving a preference refreshes the
+ * snapshot and repaints, and that repaint must not throw away the scroll
+ * position of a long settings list (see `preserveView`).
+ */
+function paint(): void {
   const info = store.state.info;
   if (!info) {
     host.innerHTML = '';
@@ -67,6 +75,9 @@ function render(): void {
   const toast = toastView(store);
   if (toast) host.appendChild(toast);
 }
+
+/** Repaint the page, keeping the reader where they are. */
+const render = (): void => preserveView(paint);
 
 function renderDataRoot(main: HTMLElement, info: AppInfo): void {
   const root = section('数据根', 'dshell 自己的配置、运行时与 webview 存储都在这里。');
