@@ -326,15 +326,25 @@
     post({ v: PROTOCOL, type: 'sessionAttention', error, needsInput, completed, running })
   }
 
-  let titleScanTimer = 0
+  let titleScanScheduled = false
   let attentionScanTimer = 0
 
+  /**
+   * Put the custom title back in the same frame that mounted the brand.
+   *
+   * Expanding the sidebar remounts the wide brand after DSH's collapse
+   * animation settles. Waiting even one animation frame lets the original
+   * "DSH 本地构建" paint for a few frames, which is exactly the flash this
+   * avoids: a mutation observer already runs before paint, and the microtask
+   * keeps the replacement in that same turn.
+   */
   function scheduleTitleScan() {
-    if (titleScanTimer !== 0) return
-    titleScanTimer = setTimeout(() => {
-      titleScanTimer = 0
+    if (titleScanScheduled) return
+    titleScanScheduled = true
+    Promise.resolve().then(() => {
+      titleScanScheduled = false
       applyCustomTitle()
-    }, 120)
+    })
   }
 
   function scheduleAttentionScan() {
