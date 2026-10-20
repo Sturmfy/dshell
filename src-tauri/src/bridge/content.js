@@ -228,11 +228,36 @@
     return null
   }
 
+  /**
+   * The element that carries the title itself, not the whole brand block.
+   *
+   * A local DSH build nests a title and a version line inside `brandName`:
+   *
+   *   brandName
+   *     └ localBuildBrand
+   *         ├ localBuildTitle   ← replace this
+   *         └ buildVersion      ← keep this
+   *
+   * The official build renders an SVG wordmark with no version line, so it
+   * falls back to the whole brand element.
+   */
+  function brandTitleElement() {
+    const brand = brandNameElement()
+    if (!brand) return null
+    if (typeof brand.querySelector === 'function') {
+      for (const selector of ['[class*="localBuildTitle" i]', '[class*="fallbackBrandName" i]']) {
+        const title = brand.querySelector(selector)
+        if (title) return title
+      }
+    }
+    return brand
+  }
+
   function applyCustomTitle() {
     // Most tabs have no custom name; do not query DSH's DOM on every mutation
     // for them.
     if (customTitle === '' && !customTitleUsed) return
-    const element = brandNameElement()
+    const element = brandTitleElement()
     if (!element) return
     if (customTitle === '') {
       const original = originalBrand.get(element)

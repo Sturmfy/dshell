@@ -113,6 +113,9 @@ function brandElement(text = 'DSH 本地构建') {
     textContent: text,
     innerHTML: `<span>${text}</span>`,
     style: {},
+    querySelector() {
+      return null
+    },
     setAttribute(name, value) {
       attributes[name] = value
     },
@@ -120,6 +123,17 @@ function brandElement(text = 'DSH 本地构建') {
       return attributes[name]
     },
   }
+}
+
+/** A local-build brand: the title and the version line are separate elements. */
+function localBuildBrand(titleText = 'DSH 本地构建', versionText = '0.2.1-rc.2-687f282') {
+  const title = brandElement(titleText)
+  const version = { textContent: versionText }
+  const brand = brandElement(`${titleText}${versionText}`)
+  brand.querySelector = selector => (
+    selector === '[class*="localBuildTitle" i]' ? title : null
+  )
+  return { brand, title, version }
 }
 
 function sessionRow(state) {
@@ -210,6 +224,17 @@ test('paints the custom name over the DSH brand and follows later renames', () =
 
   bridge.emit({ v: 1, type: 'title', title: '另一个名字' })
   assert.equal(brand.textContent, '另一个名字')
+})
+
+test('replaces only the title above the version line', () => {
+  const { brand, title, version } = localBuildBrand()
+  const bridge = boot({ brand, title: '我的工作台' })
+  assert.equal(title.textContent, '我的工作台')
+  assert.equal(version.textContent, '0.2.1-rc.2-687f282')
+
+  bridge.emit({ v: 1, type: 'title', title: '新名字' })
+  assert.equal(title.textContent, '新名字')
+  assert.equal(version.textContent, '0.2.1-rc.2-687f282')
 })
 
 test('reports the session-row attention counts to the host', () => {
