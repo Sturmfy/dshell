@@ -52,6 +52,10 @@ impl DataRoot {
     pub fn tabs_file(&self) -> PathBuf {
         self.path.join("tabs.json")
     }
+    /// The main window's last frame. State, like `tabs.json`, not a preference.
+    pub fn window_file(&self) -> PathBuf {
+        self.path.join("window.json")
+    }
     pub fn runtimes_dir(&self) -> PathBuf {
         self.path.join("runtimes")
     }

@@ -16,6 +16,7 @@ use crate::root::{self, DataRoot};
 use crate::runtime::node::{self, EnvironmentSnapshot, NodeInfo};
 use crate::runtime::npxcache::DistTags;
 use crate::tabs::manager::TabManager;
+use crate::window_state::Tracker;
 
 pub struct AppState {
     pub data_root: DataRoot,
@@ -43,13 +44,25 @@ pub struct AppState {
     /// process that describes something outside the machine.
     pub dist_tags: Mutex<Option<(std::time::Instant, DistTags)>>,
     pub tabs_file: PathBuf,
+    /// Where the main window was, kept current by the window's own events.
+    ///
+    /// The close and exit paths must save it synchronously — they run on the main
+    /// thread and cannot await the config lock — so it is a plain mutex over a
+    /// plain record, written to `window.json` with `std::fs`. See
+    /// [`crate::window_state`] for why that is a separate file.
+    pub window: Tracker,
     /// Set when something could not be persisted or a fallback kicked in; the UI
     /// surfaces it instead of silently doing something else.
     pub boot_note: Mutex<Option<String>>,
 }
 
 impl AppState {
-    pub fn new(data_root: DataRoot, manager: Arc<TabManager>, config: Config) -> Self {
+    pub fn new(
+        data_root: DataRoot,
+        manager: Arc<TabManager>,
+        config: Config,
+        window: Tracker,
+    ) -> Self {
         let tabs_file = data_root.tabs_file();
         let note = data_root.note.clone();
         let close_to_tray = AtomicBool::new(config.close_to_tray);
@@ -65,6 +78,7 @@ impl AppState {
             prepare: Mutex::new(()),
             dist_tags: Mutex::new(None),
             tabs_file,
+            window,
             boot_note: Mutex::new(note),
         }
     }

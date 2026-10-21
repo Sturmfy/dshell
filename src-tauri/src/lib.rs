@@ -26,6 +26,7 @@
 //! | [`picker`] | window-owned native directory/file pickers |
 //! | [`webview_settings`] | WebView2 policy for dshell's own chrome and page tabs |
 //! | [`tray`] | the notification-area icon, its native menu, and close-to-tray |
+//! | [`window_state`] | the saved window frame (`window.json`) and its monitor |
 //! | [`commands`] | the `invoke` surface (all `async`) |
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -50,6 +51,7 @@ pub mod tabs;
 pub mod tray;
 pub mod webview_settings;
 pub mod win;
+pub mod window_state;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -188,7 +190,16 @@ pub fn main() {
             // itself once the last window is gone — which is exactly the path the
             // close button takes — while a crash or a force kill never reaches
             // it. That is the case the warning exists for.
-            tauri::RunEvent::Exit => clear_session_marker(&session_marker),
+            tauri::RunEvent::Exit => {
+                // The window may already be gone, so this reads the copy the
+                // tracker has been keeping rather than the window itself. The two
+                // close paths already wrote it; this catches the tray's 退出,
+                // `app.exit()`, and a build where the tray failed to install.
+                if let Some(state) = app.try_state::<Arc<AppState>>() {
+                    state.window.persist();
+                }
+                clear_session_marker(&session_marker);
+            }
             _ => {}
         });
 }
@@ -205,18 +216,58 @@ fn setup_app(
     let boot_note = detect_unclean_exit(&data_root.path.join(SESSION_MARKER));
 
     let window_config = config.window.clone();
-    let mut window_builder = tauri::window::WindowBuilder::new(app, MAIN_WINDOW)
+
+    // Where the window opens is decided before it exists: the remembered frame
+    // wins, and the config's size is only the first-launch default. Monitors are
+    // read through the app handle because there is no window to ask yet.
+    let window_file = data_root.window_file();
+    let saved = window_state::load(&window_file);
+    let monitors = window_state::monitors(app.handle());
+    let primary = window_state::primary_monitor(app.handle());
+    let placement = match saved.as_ref() {
+        Some(saved) => window_state::restore(saved, &monitors, primary.as_ref()),
+        None => window_state::first_launch(
+            window_config.width,
+            window_config.height,
+            window_config.maximized,
+            &monitors,
+            primary.as_ref(),
+        ),
+    };
+    let data_root_path = data_root.path.clone();
+    crate::dsh::process::debug_log(
+        &data_root_path,
+        &format!(
+            "window: {} {}x{} at {},{}{}",
+            if saved.is_some() {
+                "restoring"
+            } else {
+                "starting"
+            },
+            placement.frame.width,
+            placement.frame.height,
+            placement.frame.x,
+            placement.frame.y,
+            placement
+                .monitor
+                .as_ref()
+                .and_then(|monitor| monitor.name.clone())
+                .map(|name| format!(" on {name}"))
+                .unwrap_or_default(),
+        ),
+    );
+
+    // Created hidden and placed while nothing can paint. The window then appears
+    // where it belongs, instead of at the OS default spot followed by a jump.
+    let window = tauri::window::WindowBuilder::new(app, MAIN_WINDOW)
         .title("dshell")
         .inner_size(window_config.width, window_config.height)
         .min_inner_size(900.0, 560.0)
         .decorations(false)
         .resizable(true)
-        .visible(true);
-    window_builder = match (window_config.x, window_config.y) {
-        (Some(x), Some(y)) => window_builder.position(x, y),
-        _ => window_builder.center(),
-    };
-    let window = window_builder.build()?;
+        .visible(false)
+        .build()?;
+    window_state::apply(&window, &placement);
 
     let size = window.inner_size().unwrap_or_default();
     let scale = window.scale_factor().unwrap_or(1.0);
@@ -249,7 +300,9 @@ fn setup_app(
         });
     }
 
-    let state = Arc::new(AppState::new(data_root, manager, config));
+    let tracker =
+        window_state::Tracker::new(window_file, data_root_path.clone(), placement.record());
+    let state = Arc::new(AppState::new(data_root, manager, config, tracker));
     if let Some(note) = boot_note {
         let mut slot = tauri::async_runtime::block_on(state.boot_note.lock());
         let merged = match slot.take() {
@@ -260,15 +313,47 @@ fn setup_app(
     }
     app.manage(state.clone());
 
+    // Keep the remembered frame current on every geometry change, so the close
+    // handlers only have to write it out. Registered after `manage`, which is
+    // the only way the handler can reach the state; the initial placement was
+    // seeded into the tracker above, so nothing before this point is lost.
+    {
+        let handle = handle.clone();
+        window.on_window_event(move |event| {
+            if !matches!(
+                event,
+                WindowEvent::Moved(_)
+                    | WindowEvent::Resized(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+            ) {
+                return;
+            }
+            let Some(state) = handle.try_state::<Arc<AppState>>() else {
+                return;
+            };
+            if let Some(window) = handle.get_window(MAIN_WINDOW) {
+                state.window.remember(&window);
+            }
+        });
+    }
+
     // The tray must exist before tabs restore: the restore path emits
     // `tabs-changed` for every tab it opens, and those are what keep the native
     // menu in step. A failed install leaves the window's old close behaviour in
     // place, so a close can never hide the window into a tray that is not there.
     let _ = tray::install(app.handle());
 
-    if window_config.maximized {
+    // Shown only now: the frame is applied and the strip exists, so the window
+    // never appears at the OS default position and then jumps. Maximizing comes
+    // after the show because tao skips the request while the window is hidden.
+    if let Err(err) = window.show() {
+        crate::dsh::process::debug_log(&data_root_path, &format!("window: show failed: {err}"));
+    }
+    if placement.maximized {
         let _ = window.maximize();
     }
+    // The resize handler may not have run yet for the size applied above.
+    state.manager.relayout();
 
     restore_tabs(state);
     Ok(())

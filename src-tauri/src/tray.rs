@@ -226,11 +226,22 @@ fn install_close_policy(app: &AppHandle) {
         let WindowEvent::CloseRequested { api, .. } = event else {
             return;
         };
+        // Record where the window is *before* it can disappear. Hiding keeps the
+        // process alive, but the destroy path never gets a second chance to read
+        // the window; both paths leave through here, so this is the one reliable
+        // moment. It is a synchronous file write: the config's lock cannot be
+        // taken from the main thread (see `window_state`).
+        let state = handle.try_state::<Arc<AppState>>();
+        if let Some(state) = state.as_ref() {
+            if let Some(window) = handle.get_window(MAIN_WINDOW) {
+                state.window.remember(&window);
+            }
+            state.window.persist();
+        }
         // The config lives behind a tokio mutex; this handler runs on the main
         // thread and must answer synchronously, so it reads the atomic mirror
         // that `AppState::update_config` keeps in step with the file.
-        let close_to_tray = handle
-            .try_state::<Arc<AppState>>()
+        let close_to_tray = state
             .map(|state| state.close_to_tray.load(Ordering::Relaxed))
             .unwrap_or(true);
         if !should_hide_on_close(close_to_tray, tray_icon(&handle).is_some()) {

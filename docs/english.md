@@ -38,6 +38,7 @@ dshell only does three things: **start or attach `dsh web`, capture the launch t
 - **Credentials never pass through dshell** — the launch token appears in memory once, then the webview redeems and holds the cookie itself.
 - **Connection first** — attaching to a local or remote instance needs no Node. dshell scans for instances already running on this machine, remembers recent connections, and lets you pin the ones you use.
 - **Browser-style tabs** — `Ctrl+T` new, `Ctrl+W` close, `Ctrl+Tab` cycle, drag to reorder, double-click to rename, middle-click to close.
+- **The window comes back** — position, size and maximized state are remembered between runs, and the window reopens at the same spot on the same monitor. A resolution change, a rearranged desktop or an unplugged second screen still puts it fully on screen.
 - **Follows the DSH theme** — the tab strip switches between light and dark with the active DSH page.
 - **Your data stays yours** — dshell's config, runtimes and webview storage live in one data root; `DSH_HOME` is left untouched by default, so existing history, settings and API keys keep working.
 

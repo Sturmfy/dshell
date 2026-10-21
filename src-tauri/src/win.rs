@@ -22,6 +22,8 @@ mod platform {
         fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
         fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
         fn CloseHandle(handle: Handle) -> i32;
+        fn IsZoomed(hwnd: Handle) -> i32;
+        fn IsIconic(hwnd: Handle) -> i32;
     }
 
     const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: u32 = 9;
@@ -167,13 +169,32 @@ mod platform {
     /// `CREATE_NO_WINDOW` — required so a GUI-subsystem dshell does not flash a
     /// console window for every `dsh` child process.
     pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    /// Is the window maximized? Asked of Windows, not of the windowing library.
+    ///
+    /// The library's flag is updated while `WM_SIZE` is processed, but Windows
+    /// sends `WM_WINDOWPOSCHANGED` — the event that reports a move — *before*
+    /// `WM_SIZE`, when the window already has its maximized rectangle but is not
+    /// flagged yet. Saving that rectangle as the restore frame is what makes
+    /// "unmaximize" leave a full-screen window behind. `IsZoomed` reads the
+    /// window style, which is already correct when the move event arrives.
+    pub fn is_zoomed(hwnd: isize) -> bool {
+        hwnd != 0 && unsafe { IsZoomed(hwnd as Handle) } != 0
+    }
+
+    /// The same idea for minimized windows: `IsIconic` is true before `WM_SIZE`,
+    /// which is when a minimized window would otherwise report its icon
+    /// position (`-32000, -32000`) as a real frame.
+    pub fn is_iconic(hwnd: isize) -> bool {
+        hwnd != 0 && unsafe { IsIconic(hwnd as Handle) } != 0
+    }
 }
 
 #[cfg(windows)]
-pub use platform::{broadcast_environment_change, JobObject, CREATE_NO_WINDOW};
+pub use platform::{broadcast_environment_change, is_iconic, is_zoomed, JobObject, CREATE_NO_WINDOW};
 
 #[cfg(not(windows))]
-pub use fallback::{broadcast_environment_change, JobObject, CREATE_NO_WINDOW};
+pub use fallback::{broadcast_environment_change, is_iconic, is_zoomed, JobObject, CREATE_NO_WINDOW};
 
 #[cfg(not(windows))]
 mod fallback {
@@ -199,4 +220,14 @@ mod fallback {
     }
 
     pub fn broadcast_environment_change() {}
+
+    /// No Win32 window styles to ask about outside Windows; the caller falls
+    /// back to the windowing library's flags there.
+    pub fn is_zoomed(_hwnd: isize) -> bool {
+        false
+    }
+
+    pub fn is_iconic(_hwnd: isize) -> bool {
+        false
+    }
 }

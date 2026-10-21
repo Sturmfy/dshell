@@ -204,13 +204,20 @@ pub struct Config {
     pub window: WindowConfig,
 }
 
+/// Initial size of the main window.
+///
+/// Only the *first* launch reads this. Once the window has closed normally its
+/// frame is remembered in `window.json` (see [`crate::window_state`]), which is a
+/// state file rather than a preference for two reasons: a close has to record it
+/// synchronously, and a bad rectangle must not be able to corrupt the rest of the
+/// configuration. Keeping the first-launch default here means a fresh install
+/// still opens with a sensible window, and a hand-written size still works.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowConfig {
     pub width: f64,
     pub height: f64,
-    pub x: Option<f64>,
-    pub y: Option<f64>,
+    /// Open maximized when there is no `window.json` yet.
     pub maximized: bool,
 }
 
@@ -219,8 +226,6 @@ impl Default for WindowConfig {
         Self {
             width: 1280.0,
             height: 820.0,
-            x: None,
-            y: None,
             maximized: false,
         }
     }

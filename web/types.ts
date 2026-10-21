@@ -140,11 +140,13 @@ export type DshHomeSetting =
   | { mode: 'instance' }
   | { mode: 'custom'; path: string };
 
+/**
+ * Initial size of the main window, used only on the first launch. The frame
+ * remembered across runs lives in `window.json`, not here.
+ */
 export interface WindowConfig {
   width: number;
   height: number;
-  x?: number | null;
-  y?: number | null;
   maximized: boolean;
 }
 
