@@ -167,7 +167,7 @@ pub fn main() {
             tauri::RunEvent::Ready => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    commands::prewarm_tab_menu(&app);
+                    commands::prewarm_tab_menu(&app).await;
                 });
             }
             // The reused menu popup is a real window even while hidden, and the

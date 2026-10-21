@@ -945,8 +945,54 @@ pub fn tab_menu_window(app: &AppHandle) -> Result<WebviewWindow, Failure> {
 /// Called from a spawned task, never from `setup` itself: webview creation hops
 /// to the event loop and blocks until it lands, the same rule every other
 /// webview in this app follows (see `TabManager::open_tab`).
-pub fn prewarm_tab_menu(app: &AppHandle) {
-    let _ = tab_menu_window(app);
+pub async fn prewarm_tab_menu(app: &AppHandle) {
+    settle_tab_menu_frame(app).await;
+}
+
+/// One-time fix-up of the popup's native frame.
+///
+/// tao sizes an undecorated, shadowed window by adding the window's current
+/// outer-minus-client offset to the requested inner size. A window that has
+/// never been shown still reports the hidden caption in that offset — 30px at
+/// 100% — so its *first* `set_size` overshoots by the caption height. That is
+/// the band of window (with its native shadow) seen around the menu on the very
+/// first open only: later opens measure against the settled frame and land
+/// exactly.
+///
+/// One resize makes Windows recalculate the frame with the real insets; a
+/// second resize, measured against that frame, is exact. Both happen while the
+/// popup is hidden, so nothing is visible, and every open that follows can be
+/// sized straight from the page's measurement.
+static TAB_MENU_FRAME: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+async fn settle_tab_menu_frame(app: &AppHandle) {
+    let app = app.clone();
+    TAB_MENU_FRAME
+        .get_or_init(|| async move {
+            let Ok(menu) = tab_menu_window(&app) else {
+                return;
+            };
+            let size = LogicalSize::new(TAB_MENU_FALLBACK_WIDTH, TAB_MENU_FALLBACK_HEIGHT);
+            let scale = menu.scale_factor().unwrap_or(1.0);
+            let target_height = TAB_MENU_FALLBACK_HEIGHT * scale;
+            let _ = menu.set_size(size);
+            // The first resize is posted to the window's thread. It lands when
+            // the client grows past the requested height — exactly the hidden
+            // caption being removed — and that is when a second size change is
+            // measured against the frame the popup will keep.
+            for _ in 0..50 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let settled = menu
+                    .inner_size()
+                    .map(|inner| f64::from(inner.height) >= target_height - 0.5)
+                    .unwrap_or(false);
+                if settled {
+                    break;
+                }
+            }
+            let _ = menu.set_size(size);
+        })
+        .await;
 }
 
 /// Drop the popup when the app is going away.
@@ -1006,6 +1052,9 @@ pub async fn show_tab_menu(
     // It must exist before the payload can be rendered and measured — and it
     // must stay hidden until that measurement arrives.
     let _menu = tab_menu_window(&app)?;
+    // The very first open must not be the one that pays for tao's unsettled
+    // frame; prewarm usually did this already, but a right-click can beat it.
+    settle_tab_menu_frame(&app).await;
 
     let (fallback_width, fallback_height) = TAB_MENU_LAST_SIZE
         .lock()
