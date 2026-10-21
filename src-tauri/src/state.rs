@@ -5,6 +5,7 @@
 //! four-level fallback chain is resolved exactly once per process.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -20,6 +21,14 @@ pub struct AppState {
     pub data_root: DataRoot,
     pub manager: Arc<TabManager>,
     pub config: Mutex<Config>,
+    /// A synchronous mirror of `config.close_to_tray`.
+    ///
+    /// The window's `CloseRequested` handler runs on the main thread and cannot
+    /// await the config lock, but it must answer "hide or exit?" before returning
+    /// (`prevent_close` is a synchronous decision). This is that answer; it is
+    /// updated only through [`Self::update_config`], the single write point for
+    /// the config.
+    pub close_to_tray: AtomicBool,
     pub node: Mutex<Option<NodeInfo>>,
     pub environment: Mutex<Option<EnvironmentSnapshot>>,
     /// Serialises "install pnpm": two of dshell's pages can offer the button, and
@@ -43,10 +52,12 @@ impl AppState {
     pub fn new(data_root: DataRoot, manager: Arc<TabManager>, config: Config) -> Self {
         let tabs_file = data_root.tabs_file();
         let note = data_root.note.clone();
+        let close_to_tray = AtomicBool::new(config.close_to_tray);
         Self {
             data_root,
             manager,
             config: Mutex::new(config),
+            close_to_tray,
             node: Mutex::new(None),
             environment: Mutex::new(None),
             pnpm_install: Mutex::new(()),
@@ -155,6 +166,11 @@ impl AppState {
             )
             .with_detail(self.data_root.config_file().display().to_string())
         })?;
+        // Every config write goes through here, so the synchronous close policy
+        // cannot drift from the saved file. Updated after the save: a rejected
+        // write must not change how the next close behaves.
+        self.close_to_tray
+            .store(snapshot.close_to_tray, Ordering::Relaxed);
         Ok(snapshot)
     }
 

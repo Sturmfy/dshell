@@ -186,6 +186,20 @@ pub struct Config {
     #[serde(default = "default_force_dsh_motion")]
     pub force_dsh_motion: bool,
 
+    /// Hide the main window to the system tray on close instead of exiting.
+    ///
+    /// Defaults to `true`: closing a window is not the same intent as ending
+    /// every DSH session it hosts, and the tray's own 退出 item is the explicit
+    /// stop. The value is mirrored into an atomic on [`crate::state::AppState`]
+    /// because the window's `CloseRequested` handler runs on the main thread and
+    /// cannot await the config lock.
+    ///
+    /// Additive on purpose: an older `config.json` without the field takes the
+    /// default, so no schema migration is needed (the same precedent as
+    /// `forceDshMotion`).
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
+
     #[serde(default)]
     pub window: WindowConfig,
 }
@@ -284,6 +298,9 @@ fn default_kill_on_close() -> bool {
 fn default_force_dsh_motion() -> bool {
     true
 }
+fn default_close_to_tray() -> bool {
+    true
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -307,6 +324,7 @@ impl Default for Config {
             fixed_port: false,
             kill_on_close: default_kill_on_close(),
             force_dsh_motion: default_force_dsh_motion(),
+            close_to_tray: default_close_to_tray(),
             window: WindowConfig::default(),
         }
     }
@@ -768,6 +786,39 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let back: Config = serde_json::from_str(&json).unwrap();
         assert!(!back.force_dsh_motion);
+    }
+
+    /// Closing a window means "put it away", not "end every DSH session", so the
+    /// tray default is on. A config written before the field existed takes the
+    /// default, while an explicit `false` is the user's decision and survives a
+    /// save/load cycle — there is no migration because the field is additive.
+    #[test]
+    fn close_to_tray_defaults_on_and_a_stored_false_is_a_decision() {
+        assert!(Config::default().close_to_tray);
+
+        let parsed: Config =
+            serde_json::from_str(r#"{"schemaVersion":2,"onboardingDone":true}"#).unwrap();
+        assert!(
+            parsed.close_to_tray,
+            "an older config takes the new default"
+        );
+
+        let parsed: Config = serde_json::from_str(
+            r#"{"schemaVersion":2,"onboardingDone":true,"closeToTray":false}"#,
+        )
+        .unwrap();
+        assert!(
+            !parsed.close_to_tray,
+            "a stored false must not be overwritten"
+        );
+
+        let config = Config {
+            close_to_tray: false,
+            ..Config::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert!(!back.close_to_tray);
     }
 
     /// `schemaVersion: 1` stored `killOnClose: false`, because that *was* the

@@ -241,6 +241,19 @@ function renderPreferences(main: HTMLElement, info: AppInfo): void {
     ),
   );
 
+  prefs.body.appendChild(
+    h(
+      'div',
+      { class: 'row row--plain' },
+      checkboxRow(
+        '关闭窗口时最小化到托盘',
+        '默认开启：点关闭（或 Alt+F4）只把 dshell 收进托盘，后端与选项卡继续运行；退出请用托盘菜单底部的「退出」。取消后关闭窗口即退出 dshell。',
+        config.closeToTray,
+        (checked) => void store.updateConfig({ closeToTray: checked }),
+      ),
+    ),
+  );
+
   main.appendChild(prefs.root);
 }
 

@@ -25,6 +25,7 @@
 //! | [`bridge`] | the narrow WebView2 message bridge injected into content tabs |
 //! | [`picker`] | window-owned native directory/file pickers |
 //! | [`webview_settings`] | WebView2 policy for dshell's own chrome and page tabs |
+//! | [`tray`] | the notification-area icon, its native menu, and close-to-tray |
 //! | [`commands`] | the `invoke` surface (all `async`) |
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -46,6 +47,7 @@ pub mod root;
 pub mod runtime;
 pub mod state;
 pub mod tabs;
+pub mod tray;
 pub mod webview_settings;
 pub mod win;
 
@@ -257,6 +259,12 @@ fn setup_app(
         *slot = Some(merged);
     }
     app.manage(state.clone());
+
+    // The tray must exist before tabs restore: the restore path emits
+    // `tabs-changed` for every tab it opens, and those are what keep the native
+    // menu in step. A failed install leaves the window's old close behaviour in
+    // place, so a close can never hide the window into a tray that is not there.
+    let _ = tray::install(app.handle());
 
     if window_config.maximized {
         let _ = window.maximize();

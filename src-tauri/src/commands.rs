@@ -1133,11 +1133,13 @@ pub async fn tab_menu_measured(app: AppHandle, width: f64, height: f64) -> Resul
     }
 }
 
-/// Hide the popup after a selection or a dismissal. Hiding keeps the warm
-/// WebView2; the next open is a show, not a creation. Async like every command
-/// that touches a window, so the call is dispatched off the webview thread.
-#[tauri::command]
-pub async fn hide_tab_menu(app: AppHandle) -> Result<(), Failure> {
+/// Hide the popup and invalidate any open still in flight.
+///
+/// Synchronous because the close-to-tray path is a window event handler: it
+/// cannot await, and hiding the main window while a measurement for the popup is
+/// still on its way would otherwise let that late reply reveal the popup again
+/// over the hidden window.
+pub fn hide_tab_menu_now(app: &AppHandle) {
     if let Ok(mut pending) = TAB_MENU_PENDING.lock() {
         *pending = None;
     }
@@ -1149,6 +1151,14 @@ pub async fn hide_tab_menu(app: AppHandle) -> Result<(), Failure> {
     if let Some(menu) = app.get_webview_window(TAB_MENU_LABEL) {
         let _ = menu.hide();
     }
+}
+
+/// Hide the popup after a selection or a dismissal. Hiding keeps the warm
+/// WebView2; the next open is a show, not a creation. Async like every command
+/// that touches a window, so the call is dispatched off the webview thread.
+#[tauri::command]
+pub async fn hide_tab_menu(app: AppHandle) -> Result<(), Failure> {
+    hide_tab_menu_now(&app);
     Ok(())
 }
 

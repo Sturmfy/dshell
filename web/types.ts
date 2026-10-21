@@ -178,6 +178,13 @@ export interface Config {
    * afterwards; restart dshell to update tabs that are already open.
    */
   forceDshMotion: boolean;
+  /**
+   * Hide the main window to the system tray on close instead of exiting.
+   *
+   * The tray always exists while dshell runs; this only decides what the close
+   * button and Alt+F4 do. The tray's own 退出 item is the explicit stop.
+   */
+  closeToTray: boolean;
   window: WindowConfig;
 }
 
