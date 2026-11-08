@@ -62,7 +62,12 @@ pub fn script() -> Option<&'static str> {
 }
 
 /// One page request. Unknown shapes are ignored by the caller.
+///
+/// The variant fields are the wire format the Windows transport consumes; on
+/// other platforms the type exists only so the protocol stays testable, which is
+/// why the fields are allowed to go unread there.
 #[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum BridgeRequest {

@@ -296,7 +296,7 @@ fn parse_macos_netstat(text: &str) -> Vec<Listener> {
             continue;
         }
         // The state column can be `LISTEN` on its own or be followed by options.
-        if !fields.iter().any(|field| *field == "LISTEN") {
+        if !fields.contains(&"LISTEN") {
             continue;
         }
         let Some(local) = fields.iter().find(|field| field.contains('.')) else {
