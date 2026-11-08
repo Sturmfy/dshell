@@ -8,8 +8,11 @@ npm version <patch|minor|major> -m "release: v%s"
 git push --follow-tags
 ```
 
-`npm version` 会依次：跑 `tools/set-version.mjs`（同步四处）→ 提交 → 打 `vX.Y.Z`
-tag。推送 tag 后，GitHub Actions 的 `release` 工作流构建 Windows/macOS 产物并创建 Release。
+`npm version` 会依次：跑 `tools/set-version.mjs`（同步四处）→ 由 version 脚本把
+`tauri.conf.json` / `Cargo.toml` / `Cargo.lock` `git add` 进来 → 提交 → 打 `vX.Y.Z`
+tag。注意 npm 只自动提交 `package.json` 与 `package-lock.json`，所以那三个文件必须
+在 version 脚本里显式 stage，否则它们会留在工作区、tag 指向一个版本不一致的提交。
+推送 tag 后，GitHub Actions 的 `release` 工作流构建 Windows/macOS 产物并创建 Release。
 
 ## 版本号规则
 
