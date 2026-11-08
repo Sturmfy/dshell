@@ -1,7 +1,7 @@
 {
   "name": "dshell",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tabbed desktop shell for DeepSeek Harness — one binary, tabs on top of the unmodified DSH web UI",
   "license": "MIT",
   "type": "module",

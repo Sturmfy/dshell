@@ -1,6 +1,6 @@
 [package]
 name = "dshell"
-version = "0.1.0"
+version = "0.1.1"
 description = "Tabbed desktop shell for DeepSeek Harness"
 edition = "2021"
 rust-version = "1.90"
