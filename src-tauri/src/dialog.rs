@@ -33,10 +33,14 @@
 //! `cargo test` fail to start rather than fail the one call. Missing v6 simply
 //! means "no prompt", which the caller treats as "keep the saved version".
 
+// The dialog plugin supplies the macOS/Linux choosers. Windows keeps its own
+// Win32 implementation, so the import travels with the code that uses it.
+#[cfg(not(windows))]
+use tauri_plugin_dialog::DialogExt;
+
 /// What the startup version prompt asks, and the labels it shows.
 #[derive(Debug, Clone)]
-pub struct ChoicePrompt {
-    pub window_title: String,
+pub struct ChoicePrompt {    pub window_title: String,
     pub instruction: String,
     pub content: String,
     /// Text next to the verification checkbox.
@@ -456,7 +460,7 @@ pub fn ask_choice(
     _owner: Option<isize>,
     prompt: &ChoicePrompt,
 ) -> Result<ChoiceOutcome, String> {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
 
     let accepted = app
         .dialog()

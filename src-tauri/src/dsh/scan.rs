@@ -465,8 +465,8 @@ tcp4       0      0  127.0.0.1.5555         127.0.0.1.50000        ESTABLISHED
 ";
         let found = parse_macos_netstat(text);
         let ports: Vec<u16> = found.iter().map(|listener| listener.port).collect();
-        assert_eq!(ports, vec![9808, 3080]);
-        assert_eq!(found[1].bind, "::1");
+        assert_eq!(ports, vec![3080, 9808]); // BTreeMap: ascending port order
+        assert_eq!(found[0].bind, "::1");
     }
 
     /// Regression: the origin used to be hard-coded to `127.0.0.1`, so a
