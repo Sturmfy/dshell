@@ -392,6 +392,10 @@ impl TabManager {
         // running it from the async runtime (never the main thread) is what keeps
         // this from deadlocking.
         let mut builder = WebviewBuilder::new(label.clone(), WebviewUrl::App(placeholder.into()))
+            // A parked webview is one pixel tall; when it is resized back into
+            // the content area WebView2 may expose its backing surface before
+            // the first repaint. Match the document instead of flashing white.
+            .background_color(crate::webview_settings::background_for_window(&self.window))
             .data_directory(data_dir.clone())
             // The bridge is the only script dshell injects into a DSH
             // page; it defines the two globals DSH already knows how to
@@ -508,6 +512,7 @@ impl TabManager {
             .window
             .add_child(
                 WebviewBuilder::new(label.clone(), WebviewUrl::App(kind.asset().into()))
+                    .background_color(crate::webview_settings::background_for_window(&self.window))
                     .data_directory(data_dir.clone())
                     .disable_drag_drop_handler()
                     .focused(false),
@@ -1192,6 +1197,20 @@ impl TabManager {
         };
         let url = asset_url(&self.app, &placeholder_path(id), &[]);
         let _ = webview.navigate(url);
+    }
+
+    /// Keep the native surface in step with the theme the DSH page reports.
+    ///
+    /// The page itself is always opaque, so this is invisible while it is
+    /// painted. It matters for the one or two frames when a parked tab is
+    /// resized back into view, which is exactly where a white flash comes from.
+    pub async fn set_tab_background(&self, id: &str, dark: bool) -> bool {
+        let Some(webview) = self.webview_of(id).await else {
+            return false;
+        };
+        webview
+            .set_background_color(Some(crate::webview_settings::background_for_mode(dark)))
+            .is_ok()
     }
 
     async fn show_error_page(&self, id: &str, failure: &Failure) {

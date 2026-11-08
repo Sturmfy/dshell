@@ -271,6 +271,12 @@ fn setup_app(
         .build()?;
     window_state::apply(&window, &placement);
 
+    // The window is hidden while this runs. Give the native surface the same
+    // colour as the document so the first frame of a newly created webview is
+    // never the default white, even before HTML has parsed.
+    let window_background = webview_settings::background_for_window(&window);
+    let _ = window.set_background_color(Some(window_background));
+
     let size = window.inner_size().unwrap_or_default();
     let scale = window.scale_factor().unwrap_or(1.0);
     let width = size.width as f64 / scale;
@@ -279,6 +285,7 @@ fn setup_app(
     // The chrome webview is dshell's own UI and the only holder of IPC access.
     let chrome = window.add_child(
         WebviewBuilder::new(CHROME_LABEL, WebviewUrl::App("index.html".into()))
+            .background_color(window_background)
             .data_directory(data_root.webview_data_dir().join("chrome"))
             .disable_drag_drop_handler(),
         LogicalPosition::new(0.0, 0.0),

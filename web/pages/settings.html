@@ -4,12 +4,32 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>设置</title>
+    <style>
+      /* The window and webview are already the right colour; keep the document
+         canvas matching before styles.css loads, so a dark start-up cannot
+         flash the default white for one frame. */
+      html {
+        background: #fff;
+        color-scheme: light;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        html {
+          background: #151517;
+          color-scheme: dark;
+        }
+      }
+    </style>
     <link rel="stylesheet" href="__STYLES__" />
   </head>
-  <body class="page-body">
+  <body class="page-body page-body--settings">
     <!--
       The settings page — an ordinary tab. Pressing the gear twice focuses this
       same tab instead of opening another one (`open_page` is a singleton).
+
+      The page itself is a category rail on the left and one scrolling reading
+      column on the right. The rail is built in settings.ts, because the active
+      category changes without navigating to another document.
     -->
     <div id="page" class="page"></div>
     <script type="module" src="__APP_JS__"></script>

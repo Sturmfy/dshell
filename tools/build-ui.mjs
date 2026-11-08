@@ -60,6 +60,15 @@ async function copyDocs() {
   await cp(path.join(webDir, 'styles.css'), path.join(outDir, 'styles.css'));
   await cp(path.join(webDir, 'shell'), path.join(outDir, 'shell'), { recursive: true });
 
+  // The settings rail shows the product mark. It is the same file the Tauri
+  // bundle uses for the executable icon, copied rather than duplicated so the
+  // two can never drift apart.
+  await mkdir(path.join(outDir, 'assets'), { recursive: true });
+  await cp(
+    path.join(root, 'src-tauri', 'icons', 'logo-tile.svg'),
+    path.join(outDir, 'assets', 'dshell-logo.svg'),
+  );
+
   const pagesOut = path.join(outDir, 'pages');
   await mkdir(pagesOut, { recursive: true });
   for (const file of await readdir(path.join(webDir, 'pages'))) {

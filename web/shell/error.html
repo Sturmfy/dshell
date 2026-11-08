@@ -4,6 +4,22 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>dshell</title>
+    <style>
+      /* The window and webview are already the right colour; keep the document
+         canvas matching before styles.css loads, so a dark start-up cannot
+         flash the default white for one frame. */
+      html {
+        background: #fff;
+        color-scheme: light;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        html {
+          background: #151517;
+          color-scheme: dark;
+        }
+      }
+    </style>
     <link rel="stylesheet" href="__STYLES__" />
   </head>
   <body class="shell-body">

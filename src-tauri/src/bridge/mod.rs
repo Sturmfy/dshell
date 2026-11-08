@@ -116,6 +116,11 @@ pub struct ContentBridge {
     /// The user's custom tab name, when there is one. It is sent on every page
     /// ready so a reload gets the brand replacement too, and re-sent on rename.
     title: Arc<RwLock<Option<String>>>,
+    /// The last dark/light mode successfully given to the WebView2 backing
+    /// surface. The theme reporter polls every couple of seconds even when the
+    /// theme has not changed, so this keeps that poll from becoming a stream of
+    /// COM calls.
+    background_dark: Arc<Mutex<Option<bool>>>,
 }
 
 impl ContentBridge {
@@ -135,6 +140,7 @@ impl ContentBridge {
             label,
             origin: Arc::new(RwLock::new(None)),
             title: Arc::new(RwLock::new(title)),
+            background_dark: Arc::new(Mutex::new(None)),
         };
         let handler_bridge = bridge.clone();
         let error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -368,16 +374,45 @@ impl ContentBridge {
         {
             return;
         }
-        let tab_id = self.label.strip_prefix("tab-").unwrap_or(&self.label);
+        let tab_id = self
+            .label
+            .strip_prefix("tab-")
+            .unwrap_or(&self.label)
+            .to_string();
         let _ = self.app.emit(
             crate::TAB_THEME_EVENT,
             json!({
-                "tabId": tab_id,
+                "tabId": &tab_id,
                 "background": background,
                 "foreground": foreground,
                 "mode": mode,
             }),
         );
+        // The strip consumes the event above; the host also uses the mode to
+        // keep the WebView2 backing surface in step. Resizing a parked tab back
+        // into view can expose that surface for a frame, and the default is
+        // white on a dark theme. Only spend the COM call when the mode actually
+        // changes — the reporter polls even when the theme is unchanged.
+        let dark = mode == "dark";
+        let needs_update = self
+            .background_dark
+            .lock()
+            .map(|slot| *slot != Some(dark))
+            .unwrap_or(true);
+        if !needs_update {
+            return;
+        }
+        let app = self.app.clone();
+        let cache = self.background_dark.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Some(state) = app.try_state::<Arc<crate::state::AppState>>() {
+                if state.manager.set_tab_background(&tab_id, dark).await {
+                    if let Ok(mut slot) = cache.lock() {
+                        *slot = Some(dark);
+                    }
+                }
+            }
+        });
     }
 
     /// Run the picker off the WebView2 thread and answer the page when it
