@@ -18,13 +18,17 @@
     "withGlobalTauri": false
   },
   "bundle": {
-    "active": false,
-    "targets": [],
-    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "icon": ["icons/icon.ico", "icons/icon.icns", "icons/icon.png"],
     "windows": {
       "webviewInstallMode": {
         "type": "skip"
       }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
     }
   }
 }

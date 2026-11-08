@@ -361,6 +361,7 @@ mod imp {
 
 #[cfg(windows)]
 pub fn pick_directory(
+    _app: &tauri::AppHandle,
     initial: Option<&str>,
     owner: Option<isize>,
     title: &str,
@@ -370,28 +371,63 @@ pub fn pick_directory(
 }
 
 #[cfg(windows)]
-pub fn pick_file(title: Option<&str>, owner: Option<isize>) -> Result<Option<String>, String> {
+pub fn pick_file(
+    _app: &tauri::AppHandle,
+    title: Option<&str>,
+    owner: Option<isize>,
+) -> Result<Option<String>, String> {
     const FILTER: &str = "可执行文件\0*.exe\0所有文件\0*.*";
-    imp::pick_file(
-        title.unwrap_or("选择 DSH 后端可执行文件"),
-        FILTER,
-        owner,
-    )
-    .map(|picked| picked.map(|path| path.to_string_lossy().to_string()))
+    imp::pick_file(title.unwrap_or("选择 DSH 后端可执行文件"), FILTER, owner)
+        .map(|picked| picked.map(|path| path.to_string_lossy().to_string()))
 }
 
+/// macOS and Linux use the dialog plugin: it is the platform's own chooser,
+/// owned by the main window through `set_parent`, and unlike the Win32 path it
+/// needs no per-OS unsafe code.
+///
+/// Called from a blocking worker (see [`crate::picker`]), which is why the
+/// blocking API is the right one here.
 #[cfg(not(windows))]
 pub fn pick_directory(
-    _initial: Option<&str>,
+    app: &tauri::AppHandle,
+    initial: Option<&str>,
     _owner: Option<isize>,
-    _title: &str,
+    title: &str,
 ) -> Result<Option<String>, String> {
-    Ok(None)
+    let mut dialog = picker(app).set_title(title);
+    if let Some(initial) = initial.filter(|path| !path.is_empty()) {
+        dialog = dialog.set_directory(initial);
+    }
+    Ok(dialog.blocking_pick_folder().and_then(file_path_to_string))
 }
 
 #[cfg(not(windows))]
-pub fn pick_file(_title: Option<&str>, _owner: Option<isize>) -> Result<Option<String>, String> {
-    Ok(None)
+pub fn pick_file(
+    app: &tauri::AppHandle,
+    title: Option<&str>,
+    _owner: Option<isize>,
+) -> Result<Option<String>, String> {
+    Ok(picker(app)
+        .set_title(title.unwrap_or("选择 DSH 后端可执行文件"))
+        .blocking_pick_file()
+        .and_then(file_path_to_string))
+}
+
+#[cfg(not(windows))]
+fn picker(app: &tauri::AppHandle) -> tauri_plugin_dialog::FileDialogBuilder<tauri::Wry> {
+    use tauri::Manager;
+    let dialog = app.dialog().file();
+    match app.get_window(crate::MAIN_WINDOW) {
+        Some(window) => dialog.set_parent(&window),
+        None => dialog,
+    }
+}
+
+#[cfg(not(windows))]
+fn file_path_to_string(path: tauri_plugin_dialog::FilePath) -> Option<String> {
+    path.into_path()
+        .ok()
+        .map(|path| path.to_string_lossy().to_string())
 }
 
 /// `TaskDialogIndirect`-backed choice prompt for the startup DSH upgrade.
@@ -400,16 +436,44 @@ pub fn pick_file(_title: Option<&str>, _owner: Option<isize>) -> Result<Option<S
 /// the same reason the pickers require one (an unowned dialog can open behind
 /// the window).
 #[cfg(windows)]
-pub fn ask_choice(owner: Option<isize>, prompt: &ChoicePrompt) -> Result<ChoiceOutcome, String> {
+pub fn ask_choice(
+    _app: &tauri::AppHandle,
+    owner: Option<isize>,
+    prompt: &ChoicePrompt,
+) -> Result<ChoiceOutcome, String> {
     choice::ask(owner, prompt)
 }
 
+/// The startup upgrade prompt on macOS and Linux.
+///
+/// The Windows TaskDialog offers a verification checkbox ("remember this") that
+/// the plugin's message dialog cannot render, so the answer here is one-shot:
+/// `remember: false` means the settings page still owns the policy. Closing the
+/// dialog counts as declining, which starts the saved version — the safe answer.
 #[cfg(not(windows))]
-pub fn ask_choice(_owner: Option<isize>, _prompt: &ChoicePrompt) -> Result<ChoiceOutcome, String> {
-    // The application only ships on Windows. Keeping the caller's code
-    // platform-independent is worth more than a fake prompt: "cancelled" means
-    // "start the saved version", which is the safe answer everywhere.
-    Ok(ChoiceOutcome::Cancelled)
+pub fn ask_choice(
+    app: &tauri::AppHandle,
+    _owner: Option<isize>,
+    prompt: &ChoicePrompt,
+) -> Result<ChoiceOutcome, String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let accepted = app
+        .dialog()
+        .message(format!("{}\n\n{}", prompt.instruction, prompt.content))
+        .title(prompt.window_title.clone())
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            prompt.accept_label.clone(),
+            prompt.decline_label.clone(),
+        ))
+        .blocking_show();
+
+    Ok(if accepted {
+        ChoiceOutcome::Accept { remember: false }
+    } else {
+        ChoiceOutcome::Decline { remember: false }
+    })
 }
 
 #[cfg(windows)]

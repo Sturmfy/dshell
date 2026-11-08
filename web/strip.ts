@@ -14,6 +14,7 @@
 // which is fed by Rust.
 
 import { api, asFailure, events, listen, win } from './ipc';
+import { shortcutLabel } from './platform';
 import { Store } from './store';
 import type {
   PageKind,
@@ -205,7 +206,7 @@ function render() {
       el.appendChild(
         h('button', {
           class: 'tab__close',
-          title: '关闭选项卡 (Ctrl+W)',
+          title: `关闭选项卡 (${shortcutLabel('W')})`,
           html: '&times;',
           onclick: (event: Event) => {
             event.stopPropagation();
@@ -282,7 +283,7 @@ function render() {
   strip.appendChild(
     h('button', {
       class: `tab__new ${isPageActive('new') ? 'tab__new--active' : ''}`,
-      title: '新建连接 (Ctrl+T)',
+      title: `新建连接 (${shortcutLabel('T')})`,
       text: '+',
       onclick: (event: Event) => {
         event.stopPropagation();

@@ -45,6 +45,7 @@ pub mod dsh;
 pub mod env;
 pub mod error;
 pub mod picker;
+pub mod platform;
 pub mod root;
 pub mod runtime;
 pub mod state;
@@ -103,6 +104,10 @@ pub fn main() {
     let session_marker = data_root.path.join(SESSION_MARKER);
 
     let builder = tauri::Builder::default()
+        // Native choosers on macOS/Linux. Windows keeps its hand-written Win32
+        // dialogs, so the plugin is registered everywhere and used only off
+        // Windows (see `dialog.rs`).
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::install_pnpm,
@@ -587,87 +592,12 @@ fn clear_session_marker(marker: &Path) {
 /// Open a URL with the user's default browser — the escape hatch every tab
 /// offers when a session cannot be established.
 pub fn shell_open(url: &str) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        shell_execute("open", url, None)
-    }
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-    }
+    crate::platform::shell_open(url)
 }
 
 /// Reveal a file (or open a directory) in the OS file manager.
 pub fn shell_reveal(path: &std::path::Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        let text = path.to_string_lossy().to_string();
-        if path.is_dir() {
-            shell_execute("open", &text, None)
-        } else {
-            shell_execute("open", "explorer.exe", Some(format!("/select,\"{text}\"")))
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let target = path.parent().unwrap_or(path);
-        std::process::Command::new("xdg-open")
-            .arg(target)
-            .spawn()
-            .map(|_| ())
-    }
-}
-
-#[cfg(windows)]
-fn shell_execute(verb: &str, target: &str, params: Option<String>) -> std::io::Result<()> {
-    use std::ffi::{c_void, OsStr};
-    use std::os::windows::ffi::OsStrExt;
-
-    extern "system" {
-        fn ShellExecuteW(
-            hwnd: *mut c_void,
-            operation: *const u16,
-            file: *const u16,
-            parameters: *const u16,
-            directory: *const u16,
-            show: i32,
-        ) -> *mut c_void;
-    }
-
-    fn wide(value: &str) -> Vec<u16> {
-        OsStr::new(value)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect()
-    }
-
-    let verb = wide(verb);
-    let target = wide(target);
-    let params = params.as_deref().map(wide);
-    let result = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            verb.as_ptr(),
-            target.as_ptr(),
-            params
-                .as_ref()
-                .map(|p| p.as_ptr())
-                .unwrap_or(std::ptr::null()),
-            std::ptr::null(),
-            1,
-        )
-    };
-    // ShellExecuteW returns a value <= 32 on failure.
-    if result as isize <= 32 {
-        return Err(std::io::Error::other(format!(
-            "ShellExecuteW failed ({})",
-            result as isize
-        )));
-    }
-    Ok(())
+    crate::platform::shell_reveal(path)
 }
 
 #[cfg(test)]
@@ -729,5 +659,20 @@ mod tests {
         let marker = marker_path("absent");
         clear_session_marker(&marker);
         assert!(!marker.exists());
+    }
+
+    /// The crate version is what the binary reports (`app_info`), and the Tauri
+    /// config version is what the bundler stamps into an installer. They are two
+    /// files, so they can drift; `cargo test` is where that has to fail, not a
+    /// release whose DMG disagrees with its about box.
+    #[test]
+    fn crate_version_matches_the_tauri_config() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json is valid JSON");
+        assert_eq!(
+            config["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "Cargo.toml and tauri.conf.json disagree; run `node tools/set-version.mjs <version>`"
+        );
     }
 }

@@ -84,9 +84,16 @@ impl LaunchUrl {
 
     /// True when the parsed host belongs to dshell itself rather than to a DSH
     /// instance.
+    ///
+    /// Windows serves dshell's pages from `http://tauri.localhost`; macOS and
+    /// Linux use the custom `tauri://localhost` scheme. Both forms are rejected
+    /// here regardless of the platform the URL was recorded on, because a
+    /// persisted `display_origin` can outlive a platform-specific build.
     pub fn is_dshell_page(&self) -> bool {
         let host = self.host.to_lowercase();
-        host == "tauri.localhost" || host.ends_with(".tauri.localhost")
+        (self.scheme == "tauri" && host == "localhost")
+            || host == "tauri.localhost"
+            || host.ends_with(".tauri.localhost")
     }
 }
 

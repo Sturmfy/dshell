@@ -553,11 +553,12 @@ function runtimeSection(status: LocalRuntimeState): HTMLElement {
 function sourceLocationSection(status: LocalRuntimeState): HTMLElement {
   const source = status.source;
   const info = store.state.info;
+  const examplePath = info?.environment.platform === 'windows' ? 'D:\\dsh' : '/home/you/dsh';
 
   const dirInput = h('input', {
     type: 'text',
     value: state.sourceDraft ?? source.container,
-    placeholder: info?.root.defaultSourceContainer ?? 'D:\\',
+    placeholder: info?.root.defaultSourceContainer ?? examplePath,
     spellcheck: 'false',
   }) as HTMLInputElement;
   dirInput.addEventListener('input', () => {
@@ -586,7 +587,7 @@ function sourceLocationSection(status: LocalRuntimeState): HTMLElement {
   );
   if (draft && !valid) {
     location.appendChild(
-      h('p', { class: 'field__error', text: '必须是绝对路径，例如 D:\\dsh。' }),
+      h('p', { class: 'field__error', text: `必须是绝对路径，例如 ${examplePath}。` }),
     );
   }
 

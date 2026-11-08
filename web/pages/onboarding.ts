@@ -254,9 +254,12 @@ function appendEnvironmentStep(main: HTMLElement, info: AppInfo): void {
   const list = h('ul', { class: 'checks' });
   list.appendChild(
     checkRow(
-      info.environment.webview2Version ? 'ok' : 'bad',
-      'WebView2 运行时',
-      info.environment.webview2Version ?? '未检测到（应用无法运行）',
+      // The engine is the one that is already rendering this window: WebView2
+      // on Windows, the OS WebKit on macOS/Linux. It cannot be "missing" —
+      // a missing engine means there is no window to show this check in.
+      'ok',
+      `${info.environment.webview.name} 运行时`,
+      info.environment.webview.version ?? '由系统提供',
     ),
   );
   list.appendChild(

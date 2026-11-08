@@ -747,7 +747,10 @@ async fn resolve_runtime(
                     FailureCode::NpxInstallFailed,
                     format!("{} 里没有找到 DSH", root.display()),
                 )
-                .with_detail("期望存在 node_modules/.bin/dsh.cmd，或 apps/cli/src/bin.ts。")
+                .with_detail(format!(
+                    "期望存在 {}，或 apps/cli/src/bin.ts。",
+                    runtime::NPM_ENTRY
+                ))
             })?;
             Ok(RuntimeSpec::Managed {
                 root: install.root.clone(),

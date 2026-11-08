@@ -49,6 +49,11 @@ fn cache_dirs(data_root: &Path) -> Vec<(PathBuf, bool)> {
             dirs.push((PathBuf::from(base).join("npm-cache"), false));
         }
     }
+    // npm on Unix keeps one cache at `~/.npm` (an explicit `cache` setting is
+    // not discoverable from here, so the default is the honest guess).
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push((PathBuf::from(home).join(".npm"), false));
+    }
     dirs
 }
 

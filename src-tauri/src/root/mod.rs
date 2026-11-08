@@ -20,8 +20,12 @@ pub enum RootSource {
     Env,
     /// 3) `<exe dir>/dshell-data/`
     Portable,
-    /// 4) `%LOCALAPPDATA%\dshell\`
-    LocalAppData,
+    /// 4) the platform's per-user data directory + `dshell/`
+    ///
+    /// `%LOCALAPPDATA%\dshell` on Windows, `$XDG_DATA_HOME/dshell` (usually
+    /// `~/.local/share/dshell`) on Linux, `~/Library/Application Support/dshell`
+    /// on macOS. `dirs::data_local_dir()` is exactly that triple.
+    SystemData,
 }
 
 impl RootSource {
@@ -30,8 +34,27 @@ impl RootSource {
             RootSource::Cli => "命令行参数 --data-root",
             RootSource::Env => "$DSHELL_HOME 环境变量",
             RootSource::Portable => "exe 同级 dshell-data/（便携）",
-            RootSource::LocalAppData => "%LOCALAPPDATA%\\dshell（回退）",
+            RootSource::SystemData => system_data_label(),
         }
+    }
+}
+
+fn system_data_label() -> &'static str {
+    #[cfg(windows)]
+    {
+        "%LOCALAPPDATA%\\dshell（回退）"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "~/Library/Application Support/dshell（回退）"
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        "$XDG_DATA_HOME/dshell（回退）"
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        "系统数据目录/dshell（回退）"
     }
 }
 
@@ -105,38 +128,45 @@ pub fn locate(cli_override: Option<PathBuf>) -> DataRoot {
     };
 
     // 3) next to the executable — the true portable default.
-    // 4) %LOCALAPPDATA%\dshell — read-only media / restricted permissions.
-    let (path, source) = portable_or_local();
+    // 4) the per-user system data directory — read-only media / restricted
+    //    permissions.
+    let (path, source) = portable_or_system();
     DataRoot { path, source, note: env_note }
 }
 
-fn portable_or_local() -> (PathBuf, RootSource) {
+fn portable_or_system() -> (PathBuf, RootSource) {
     if let Some(dir) = portable_dir() {
         if crate::env::probe_writable(&dir).is_ok() {
             return (dir, RootSource::Portable);
         }
     }
-    (local_app_data_dir(), RootSource::LocalAppData)
+    (system_data_dir(), RootSource::SystemData)
 }
 
 fn portable_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        // The executable lives at `dshell.app/Contents/MacOS/dshell`; the
+        // folder the user dragged into /Applications is the bundle's parent,
+        // and a writable `dshell-data/` belongs there, not inside a signed
+        // (read-only) bundle.
+        let bundle = exe.parent()?.parent()?.parent()?;
+        if bundle.extension() == Some(std::ffi::OsStr::new("app")) {
+            let parent = bundle.parent()?;
+            return Some(absolutize(&parent.join("dshell-data")));
+        }
+    }
     let dir = exe.parent()?.join("dshell-data");
     Some(absolutize(&dir))
 }
 
-fn local_app_data_dir() -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .or_else(dirs_fallback)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("dshell")
-}
-
-fn dirs_fallback() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .map(PathBuf::from)
-        .map(|p| p.join("AppData").join("Local"))
+fn system_data_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
+        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("dshell")
 }
 
 /// Make a path absolute without requiring it to exist.
@@ -170,10 +200,20 @@ fn normalize(path: &Path) -> PathBuf {
 
 /// Lowercased, separator-normalized form of a path — used both for comparing
 /// paths and for the stable instance key.
+///
+/// Case and separator folding is a Windows filesystem property. On Unix the
+/// same workspace must keep its exact spelling, otherwise two distinct
+/// directories would share one webview storage and one login.
 pub fn normalize_key(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('/', "\\");
-    let trimmed = text.trim_end_matches('\\');
-    trimmed.to_lowercase()
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy().replace('/', "\\");
+        text.trim_end_matches('\\').to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().trim_end_matches('/').to_string()
+    }
 }
 
 /// Stable short id for "the same instance" (same workspace + same DSH_HOME).
@@ -243,8 +283,10 @@ pub fn default_workspace() -> Option<PathBuf> {
 }
 
 fn user_home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
+    let first = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let second = if cfg!(windows) { "HOME" } else { "USERPROFILE" };
+    std::env::var_os(first)
+        .or_else(|| std::env::var_os(second))
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
 }
@@ -253,17 +295,36 @@ fn user_home() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn normalize_collapses_dots() {
         assert_eq!(normalize(Path::new(r"E:\a\b\..\c")), PathBuf::from(r"E:\a\c"));
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn normalize_collapses_dots() {
+        assert_eq!(normalize(Path::new("/a/b/../c")), PathBuf::from("/a/c"));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn instance_key_is_stable_and_path_case_insensitive() {
         let a = instance_key(Path::new(r"E:\Work\App"), Some(Path::new(r"E:\Home")));
         let b = instance_key(Path::new(r"e:/work/app/"), Some(Path::new(r"E:\Home\")));
         assert_eq!(a, b);
         let c = instance_key(Path::new(r"E:\Work\App"), None);
+        assert_ne!(a, c);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn instance_key_keeps_case_and_normalizes_trailing_separator() {
+        let a = instance_key(Path::new("/work/App"), Some(Path::new("/home/me")));
+        let b = instance_key(Path::new("/work/App/"), Some(Path::new("/home/me/")));
+        assert_eq!(a, b);
+        // Case is meaningful on Unix: /work/App and /work/app are two projects.
+        let c = instance_key(Path::new("/work/app"), Some(Path::new("/home/me")));
         assert_ne!(a, c);
     }
 

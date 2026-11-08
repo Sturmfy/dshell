@@ -145,6 +145,11 @@ pub fn spawn_and_supervise(
     }
     #[cfg(windows)]
     cmd.creation_flags(crate::win::CREATE_NO_WINDOW);
+    // Unix's equivalent of the job object: give the child its own process
+    // group so cancelling can signal the whole tree, not just the direct
+    // child (npx spawns node, node spawns DSH's own tools).
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     let command_line = plan.command_line();
     let debug_root = debug_root.clone();
@@ -173,8 +178,11 @@ pub fn spawn_and_supervise(
         },
         Err(_) => None,
     };
-    #[cfg(not(windows))]
-    let job: Option<crate::win::JobObject> = None;
+    #[cfg(unix)]
+    let job = crate::win::JobObject::new().ok().map(|mut job| {
+        job.attach_group(pid);
+        job
+    });
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();

@@ -317,7 +317,14 @@ pub fn require_node(node: Option<&NodeInfo>) -> Result<&NodeInfo, Failure> {
     Ok(node)
 }
 
+/// The executable npm writes into a local tree's `.bin` directory.
+///
+/// Windows shims are `.cmd` wrappers; Unix links are extensionless shell
+/// scripts. Both point at the same `lib/bin.js`.
+#[cfg(windows)]
 pub const NPM_ENTRY: &str = "node_modules/.bin/dsh.cmd";
+#[cfg(not(windows))]
+pub const NPM_ENTRY: &str = "node_modules/.bin/dsh";
 pub const NPM_ENTRY_ALT: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
 pub const SOURCE_ENTRY: &str = "apps/cli/src/bin.ts";
 

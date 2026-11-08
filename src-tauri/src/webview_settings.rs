@@ -49,5 +49,9 @@ pub fn disable_context_menu(webview: &Webview) {
             };
             let _ = settings.SetAreDefaultContextMenusEnabled(false);
         }
+        // WebKit has no equivalent switch; its menu is left alone (documented
+        // in `docs/platforms.md`).
+        #[cfg(not(windows))]
+        let _ = platform;
     });
 }

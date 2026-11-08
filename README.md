@@ -5,7 +5,7 @@
   一个二进制，一个窗口，多个原生 DSH 选项卡。</p>
   <p>
     <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f6fed"></a>
-    <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6">
+    <img alt="Platform: Windows, Linux, macOS" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20Linux%20%7C%20macOS-0078D6">
     <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB">
     <img alt="Rust 1.90+" src="https://img.shields.io/badge/Rust-1.90%2B-000000">
   </p>
@@ -53,11 +53,18 @@
 
 ### 直接运行
 
-从 [Releases](https://github.com/Sturmfy/dshell/releases) 获取 `dshell.exe`（或按下方步骤从源码构建），双击即可。
+从 [Releases](https://github.com/Sturmfy/dshell/releases) 取对应平台的包，解压/双击即可：
+
+| 平台 | 产物 | 说明 |
+|---|---|---|
+| Windows 10/11 | `dshell-<版本>-windows-x64.exe` | 单文件，拷走就能跑；需要 WebView2 Runtime（系统一般已自带） |
+| Linux x86_64 | `dshell-<版本>-linux-x86_64.AppImage` | 单文件 AppImage，`chmod +x` 后运行；需要 WebKitGTK 4.1 |
+| macOS 11+ | `dshell-<版本>-macos-universal.dmg` | arm64 + Intel 通用；未签名时需右键「打开」或 `xattr -dr com.apple.quarantine` |
+
 首次启动会打开向导：选择数据位置 → 环境检查 → 新建连接。
 
-需要 Windows 10/11 与 WebView2 Runtime（系统一般已自带）。「连接」不需要 Node，
-只有「启动本地」走 npx 时才需要。
+「连接」不需要 Node，只有「启动本地」走 npx 时才需要。平台依赖与已知差异见
+[docs/platforms.md](docs/platforms.md)。
 
 ### 数据放在哪
 
@@ -67,25 +74,30 @@ dshell 的数据根按四级回落，设置页会显示最终生效的是哪一�
 |---|---|
 | 1 | `--data-root <path>` |
 | 2 | `$DSHELL_HOME` |
-| 3 | `<exe 所在目录>\dshell-data\` |
-| 4 | `%LOCALAPPDATA%\dshell\` |
+| 3 | `<exe 所在目录>\dshell-data\`（macOS 为 `.app` 同级） |
+| 4 | 系统数据目录：`%LOCALAPPDATA%\dshell` / `~/.local/share/dshell` / `~/Library/Application Support/dshell` |
 
 配置、下载的运行时、每个实例的 webview 存储都在这里。DSH 自己的 `~/.dsh`
 （会话、设置、凭据）默认不受影响。
 
 ### 从源码构建
 
-需要 Rust ≥ 1.90 + MSVC Build Tools、Node ≥ 20（仅构建时需要）与 WebView2 Runtime。
+需要 Rust ≥ 1.90、Node ≥ 20 与对应平台的 WebView：
 
 ```powershell
 npm install        # esbuild / typescript / @tauri-apps/api
-npm run build      # 构建 UI + release 二进制
-npm run binary     # 落到 release/dshell.exe，并断言它是单文件
+npm run build      # Windows：构建 UI + release 二进制
+npm run binary     # Windows：落到 release/dshell.exe，并断言它是单文件
+npm run bundle:linux  # Linux：构建 AppImage（src-tauri/target/release/bundle/appimage）
+npm run bundle:mac    # macOS：构建通用 .app + .dmg（bundle/dmg）
 npm run app        # 开发模式运行
 npm test           # Rust 单元测试
 npm run check      # clippy -D warnings
 npm run icons      # logo-tile.svg → PNG → icon.ico（需要本机 Chrome/Edge）
 ```
+
+Linux 构建还要装 Tauri 的系统依赖（`libwebkit2gtk-4.1-dev`、`libgtk-3-dev`、
+`libayatana-appindicator3-dev` 等，见 [docs/platforms.md](docs/platforms.md)）。
 
 ### 快捷键
 
@@ -110,16 +122,23 @@ $env:DSHELL_DEBUG='1'
 
 ## 边界
 
-- 只支持 Windows 10/11；架构不排斥其他平台，但首版只验收 Windows。
+- 支持 Windows 10/11、Linux（glibc ≥ 2.35，X11/Wayland + WebKitGTK 4.1）、
+  macOS 11+。Windows 是首版验收平台；macOS/Linux 的 GUI 验收清单见
+  [docs/platforms.md](docs/platforms.md)。
+- Windows 的「原生目录选择器」与「拖入文件的真实路径（`@文件` chip）」由 WebView2
+  桥接提供；macOS/Linux 上 DSH 会回退到它自己的目录选择器与浏览器上传路径，
+  这两个增强功能暂不可用（已在平台文档写明）。
 - 不随附 Node，也不代管模型凭据；API Key 仍在 DSH 自己的设置里。
 - 不读 `~/.dsh/.credentials.yaml` 自行铸造 cookie。
 - 「启动本地」首次使用 npx 需要下载官方发行版（约 450 MB），之后走缓存。
 - 版本检测只覆盖重启后自动恢复的本地 npx 选项卡，并且需要访问 npm registry；源码版、本地维护目录与其他后端二进制不会被改动。「更新到新版本」指 DSH，不是 dshell 自身。
-- 首版不做自动更新（dshell 自身）。
+- 暂不做 dshell 自身的自动更新。
 
 ## 文档
 
 - [English README](docs/english.md) — 同一份说明的英文版。
+- [docs/platforms.md](docs/platforms.md) — 各平台依赖、安装、已知差异与发布前冒烟清单。
+- [docs/releasing.md](docs/releasing.md) — 版本号规则与发版流程。
 - [ARCHITECTURE.md](ARCHITECTURE.md) — 多 webview 的窗口模型、鉴权边界、进程生命周期与失败模式。
 
 ## 许可

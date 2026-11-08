@@ -224,17 +224,26 @@ pub async fn decide(app: &AppHandle, state: &AppState, specs: &[TabSpec]) -> Opt
 
     // An unowned dialog is not modal to dshell and can open behind the main
     // window, which looks like a hung startup. Fail open to the saved version
-    // instead; the settings page still works.
-    let Some(owner) = crate::picker::dialog_owner(app) else {
-        debug(
-            state,
-            "startup upgrade: no owner window for the prompt; keeping saved versions",
-        );
-        return None;
+    // instead; the settings page still works. Only Windows needs the HWND: the
+    // macOS/Linux dialog is parented through the window handle by the plugin.
+    let owner = crate::picker::dialog_owner(app);
+    #[cfg(windows)]
+    let owner = match owner {
+        Some(hwnd) => Some(hwnd),
+        None => {
+            debug(
+                state,
+                "startup upgrade: no owner window for the prompt; keeping saved versions",
+            );
+            return None;
+        }
     };
     let prompt = choice_prompt(&proposal);
-    let answer =
-        tokio::task::spawn_blocking(move || crate::dialog::ask_choice(Some(owner), &prompt)).await;
+    let app_handle = app.clone();
+    let answer = tokio::task::spawn_blocking(move || {
+        crate::dialog::ask_choice(&app_handle, owner, &prompt)
+    })
+    .await;
 
     match answer {
         Ok(Ok(crate::dialog::ChoiceOutcome::Accept { remember })) => {

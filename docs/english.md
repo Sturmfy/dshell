@@ -5,7 +5,7 @@
   One binary, one window, as many native DSH tabs as you need.</p>
   <p>
     <a href="../LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f6fed"></a>
-    <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6">
+    <img alt="Platform: Windows, Linux, macOS" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20Linux%20%7C%20macOS-0078D6">
     <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB">
     <img alt="Rust 1.90+" src="https://img.shields.io/badge/Rust-1.90%2B-000000">
   </p>
@@ -53,9 +53,17 @@ dshell only does three things: **start or attach `dsh web`, capture the launch t
 
 ### Run it
 
-Get `dshell.exe` from [Releases](https://github.com/Sturmfy/dshell/releases) — or [build it from source](#build-from-source) — and double-click it. The first launch opens a wizard: choose a data location → check the environment → create a connection.
+Get the package for your platform from [Releases](https://github.com/Sturmfy/dshell/releases) — or [build it from source](#build-from-source):
 
-Windows 10/11 and the WebView2 Runtime are required (usually already present). Attaching needs no Node; only "start local" via npx does.
+| Platform | Artifact | Notes |
+|---|---|---|
+| Windows 10/11 | `dshell-<version>-windows-x64.exe` | single file; WebView2 Runtime required (usually present) |
+| Linux x86_64 | `dshell-<version>-linux-x86_64.AppImage` | single-file AppImage; WebKitGTK 4.1 required |
+| macOS 11+ | `dshell-<version>-macos-universal.dmg` | universal; unsigned builds need right-click → Open, or `xattr -dr com.apple.quarantine` |
+
+The first launch opens a wizard: choose a data location → check the environment → create a connection.
+
+Attaching needs no Node; only "start local" via npx does. Platform dependencies and known gaps are in [docs/platforms.md](platforms.md).
 
 > The in-app UI is currently in Simplified Chinese. This English README documents the same application.
 
@@ -67,24 +75,28 @@ The data root has a four-level fallback; the settings page always shows which le
 |---|---|
 | 1 | `--data-root <path>` |
 | 2 | `$DSHELL_HOME` |
-| 3 | `<directory containing dshell.exe>\dshell-data\` |
-| 4 | `%LOCALAPPDATA%\dshell\` |
+| 3 | `dshell-data/` next to the executable (next to the `.app` on macOS) |
+| 4 | `%LOCALAPPDATA%\dshell` / `~/.local/share/dshell` / `~/Library/Application Support/dshell` |
 
 This holds dshell's config, downloaded runtimes and per-instance webview storage. DSH's own `~/.dsh` (sessions, settings, credentials) is untouched by default.
 
 ### Build from source
 
-Rust ≥ 1.90 with MSVC Build Tools, Node ≥ 20 (build only), and the WebView2 Runtime.
+Rust ≥ 1.90, Node ≥ 20 (build only), and the platform's web engine (WebView2 on Windows, WebKitGTK on Linux, WebKit on macOS).
 
 ```powershell
-npm install        # esbuild / typescript / @tauri-apps/api
-npm run build      # build the UI + release binary
-npm run binary     # stage release/dshell.exe and assert it is a single file
-npm run app        # run in development mode
-npm test           # Rust unit tests
-npm run check      # clippy -D warnings
-npm run icons      # logo-tile.svg → PNG → icon.ico (needs local Chrome/Edge)
+npm install           # esbuild / typescript / @tauri-apps/api
+npm run build         # Windows: build the UI + release binary
+npm run binary        # Windows: stage release/dshell.exe and assert it is a single file
+npm run bundle:linux  # Linux: build the AppImage
+npm run bundle:mac    # macOS: build the universal .app + .dmg
+npm run app           # run in development mode
+npm test              # Rust unit tests
+npm run check         # clippy -D warnings
+npm run icons         # logo-tile.svg → PNG → icon.ico (needs local Chrome/Edge)
 ```
+
+Linux also needs Tauri's system packages (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, …), listed in [docs/platforms.md](platforms.md).
 
 ### Keyboard shortcuts
 
@@ -109,16 +121,19 @@ $env:DSHELL_DEBUG='1'
 
 ## Scope
 
-- Windows 10/11 only. The architecture does not preclude other platforms, but the first release is verified on Windows alone.
+- Windows 10/11, Linux (glibc ≥ 2.35, X11/Wayland + WebKitGTK 4.1) and macOS 11+. Windows is the reference platform; the macOS/Linux GUI checklist lives in [docs/platforms.md](platforms.md).
+- On Windows, the native folder chooser and real-path `@file` chips come from the WebView2 bridge. On macOS/Linux DSH falls back to its own chooser and browser uploads; those two enhancements are not available yet (documented in the platform notes).
 - No bundled Node and no model credentials handled by dshell; API keys stay in DSH's own settings.
 - dshell never reads `~/.dsh/.credentials.yaml` to mint cookies.
 - "Start local" via npx downloads the official distribution on first use (~450 MB); later launches use the cache.
 - The version check only covers restored local npx tabs and needs access to the npm registry. Source checkouts, managed trees and other backend binaries are left alone. "Update to the new version" means DSH, not dshell itself.
-- No auto-update of dshell in the first release.
+- No dshell self-update yet.
 
 ## Documentation
 
 - [中文 README](../README.md) — the same guide in Simplified Chinese.
+- [docs/platforms.md](platforms.md) — dependencies, install steps, known gaps and the pre-release smoke checklist.
+- [docs/releasing.md](releasing.md) — versioning rules and the release flow.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — the multi-webview window model, authentication boundary, process lifecycle and failure modes.
 
 ## License

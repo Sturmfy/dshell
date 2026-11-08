@@ -197,7 +197,8 @@ pub async fn prepare(
         )
         .with_detail(
             "「源码版」需要一个 git 来克隆和更新 DSH 仓库。\
-             安装 Git for Windows（https://git-scm.com/download/win）后重试。"
+             安装 git（Windows 上常用 Git for Windows，Linux 用发行版的包管理器，\
+             macOS 用 `xcode-select --install`）后重试。"
                 .to_string(),
         )
         .with_action(Action::primary("open-git", "打开 Git 下载页"))

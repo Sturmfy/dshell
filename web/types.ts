@@ -127,9 +127,23 @@ export interface PnpmInstall {
   blocked?: string | null;
 }
 
+/**
+ * The web engine the host provides.
+ *
+ * Windows runs WebView2 (a separate runtime the user may have to install);
+ * macOS and Linux ship WebKit with the OS, so the version is usually null and
+ * "missing" is not a state the UI can be in.
+ */
+export interface WebviewRuntime {
+  name: string;
+  version?: string | null;
+}
+
 export interface EnvironmentSnapshot {
   node?: NodeInfo | null;
-  webview2Version?: string | null;
+  webview: WebviewRuntime;
+  /** `windows` | `linux` | `macos`; gates platform-only settings. */
+  platform: string;
   pnpm?: string | null;
   pnpmInstall?: PnpmInstall | null;
   notes: string[];

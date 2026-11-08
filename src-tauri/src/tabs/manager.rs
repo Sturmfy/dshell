@@ -397,12 +397,15 @@ impl TabManager {
             // the first repaint. Match the document instead of flashing white.
             .background_color(crate::webview_settings::background_for_window(&self.window))
             .data_directory(data_dir.clone())
-            // The bridge is the only script dshell injects into a DSH
-            // page; it defines the two globals DSH already knows how to
-            // read, and opens no Tauri IPC surface.
-            .initialization_script(crate::bridge::SCRIPT)
             .disable_drag_drop_handler()
             .focused(false);
+        // The bridge is the only script dshell injects into a DSH page; it
+        // defines the two globals DSH already knows how to read, and opens no
+        // Tauri IPC surface. Platforms without a transport inject nothing and
+        // DSH uses its own chooser/upload path.
+        if let Some(script) = crate::bridge::script() {
+            builder = builder.initialization_script(script);
+        };
         if force_motion {
             // Applied to DSH content tabs only: dshell's own pages and the
             // strip keep honoring the system's reduced-motion preference.
@@ -463,10 +466,7 @@ impl TabManager {
             )
             .map_err(|err| {
                 Failure::new(FailureCode::Internal, format!("创建 webview 失败：{err}"))
-                    .with_detail(
-                        "这通常意味着 WebView2 运行时不可用或已损坏。\
-                     可在 https://developer.microsoft.com/microsoft-edge/webview2/ 安装。",
-                    )
+                    .with_detail(crate::platform::webview_failure_hint())
             })?;
 
         Ok(self
@@ -520,10 +520,8 @@ impl TabManager {
                 LogicalSize::new(1.0, 1.0),
             )
             .map_err(|err| {
-                Failure::new(FailureCode::Internal, format!("创建页面失败：{err}")).with_detail(
-                    "这通常意味着 WebView2 运行时不可用或已损坏。\
-                     可在 https://developer.microsoft.com/microsoft-edge/webview2/ 安装。",
-                )
+                Failure::new(FailureCode::Internal, format!("创建页面失败：{err}"))
+                    .with_detail(crate::platform::webview_failure_hint())
             })?;
         crate::webview_settings::disable_context_menu(&webview);
 
@@ -1922,16 +1920,13 @@ fn placeholder_path(id: &str) -> String {
 }
 
 fn asset_url(app: &AppHandle, relative: &str, query: &[(&str, String)]) -> tauri::Url {
-    // On Windows the app origin is `http://tauri.localhost` (never https: that
-    // would forbid mixed content to `http://127.0.0.1`, and flipping it later
-    // would move every webview's storage).
     let base = app
         .config()
         .build
         .dev_url
         .as_ref()
         .map(|url| url.to_string())
-        .unwrap_or_else(|| "http://tauri.localhost/".to_string());
+        .unwrap_or_else(|| format!("{}/", crate::platform::app_origin()));
     let mut joined = format!("{}/{}", base.trim_end_matches('/'), relative);
     if !query.is_empty() {
         let params: Vec<String> = query
@@ -1941,8 +1936,9 @@ fn asset_url(app: &AppHandle, relative: &str, query: &[(&str, String)]) -> tauri
         joined.push('?');
         joined.push_str(&params.join("&"));
     }
-    tauri::Url::parse(&joined)
-        .unwrap_or_else(|_| tauri::Url::parse("http://tauri.localhost/").expect("static url"))
+    tauri::Url::parse(&joined).unwrap_or_else(|_| {
+        tauri::Url::parse(&format!("{}/", crate::platform::app_origin())).expect("static url")
+    })
 }
 
 fn urlencode(value: &str) -> String {

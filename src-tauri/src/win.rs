@@ -202,21 +202,39 @@ mod fallback {
 
     pub const CREATE_NO_WINDOW: u32 = 0;
 
-    /// Job objects are a Windows concept. On other platforms the child is
-    /// killed directly (see `dsh::process`); this is a no-op.
+    /// Job objects are a Windows concept. On Unix the child is started as its
+    /// own process group (`Command::process_group(0)`) and this type remembers
+    /// that group so `terminate` can signal every process in it — the same
+    /// "whole tree dies" guarantee without a Win32 handle.
     #[derive(Default)]
-    pub struct JobObject;
+    pub struct JobObject {
+        pgid: i32,
+    }
 
     impl JobObject {
         pub fn new() -> io::Result<Self> {
-            Ok(Self)
+            Ok(Self::default())
+        }
+
+        /// Attach by pid rather than by handle (Unix has no child handle).
+        pub fn attach_group(&mut self, pid: u32) {
+            self.pgid = pid as i32;
         }
 
         pub fn assign(&self, _process: *mut std::ffi::c_void) -> io::Result<()> {
             Ok(())
         }
 
-        pub fn terminate(&self) {}
+        pub fn terminate(&self) {
+            if self.pgid > 0 {
+                // SAFETY: the child was spawned with `process_group(0)`, so its
+                // pgid equals its pid and the group can only contain processes
+                // it started.
+                unsafe {
+                    libc::kill(-self.pgid, libc::SIGKILL);
+                }
+            }
+        }
     }
 
     pub fn broadcast_environment_change() {}

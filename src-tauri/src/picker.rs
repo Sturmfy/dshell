@@ -60,8 +60,9 @@ pub async fn pick_directory(
     let owner = dialog_owner(app);
     let title = title.to_string();
     let initial_display = initial.clone();
+    let app_handle = app.clone();
     let result = tokio::task::spawn_blocking(move || {
-        crate::dialog::pick_directory(initial.as_deref(), owner, &title)
+        crate::dialog::pick_directory(&app_handle, initial.as_deref(), owner, &title)
     })
     .await
     .map_err(|err| Failure::new(FailureCode::Internal, format!("目录选择器任务失败：{err}")))?
@@ -93,8 +94,9 @@ pub async fn pick_file(
     })?;
     let owner = dialog_owner(app);
     let title = title.unwrap_or_else(|| "选择 DSH 后端可执行文件".to_string());
+    let app_handle = app.clone();
     let result = tokio::task::spawn_blocking(move || {
-        crate::dialog::pick_file(Some(&title), owner)
+        crate::dialog::pick_file(&app_handle, Some(&title), owner)
     })
     .await
     .map_err(|err| Failure::new(FailureCode::Internal, format!("文件选择器任务失败：{err}")))?

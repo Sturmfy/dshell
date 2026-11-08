@@ -17,6 +17,11 @@
 //! the origin and tells the user what is missing — plus a one-click path for the
 //! origins dshell already has a credential for (its own tabs, or a remembered
 //! connection).
+//!
+//! The port table has no portable reader, so each platform gets its cheapest
+//! one: `netstat -ano` on Windows, `/proc/net/tcp{,6}` on Linux (no process
+//! launch), and `netstat -an -p tcp` on macOS. All three map into [`Listener`],
+//! and only `bind`/`port` matter for the probe — `pid` is opportunistic.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -29,8 +34,8 @@ use crate::error::{Failure, FailureCode};
 pub const PROBE_TIMEOUT: Duration = Duration::from_millis(1200);
 /// How many ports are probed at once.
 const CONCURRENCY: usize = 16;
-/// `netstat` reads the whole TCP table; a second is already generous.
-const NETSTAT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Reading the port table is cheap; a second is already generous.
+const TABLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One DSH server found on this machine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,21 +61,42 @@ pub struct Instance {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listener {
     pub port: u16,
-    /// `127.0.0.1`, `::1`, … as netstat spelled it.
+    /// `127.0.0.1`, `::1`, … as the platform spelled it.
     pub bind: String,
-    /// The process that owns the socket, when netstat printed it. Nothing reads
-    /// it yet: the identity document that would make it decisive
+    /// The process that owns the socket, when the platform printed it. Nothing
+    /// reads it yet: the identity document that would make it decisive
     /// (`instance.pid == socket owner`) is not served by DSH. Capturing it here
-    /// costs one field and saves a second `netstat` pass when it is.
+    /// costs one field and saves a second table pass when it is.
     pub pid: Option<u32>,
 }
 
-/// Loopback listeners currently in `LISTENING` state.
-///
-/// Parsed from `netstat -ano` rather than asked of the OS directly: the table is
-/// one process launch, needs no FFI for `GetExtendedTcpTable`, and produces the
-/// same list `netstat` shows a user who wants to check by hand.
+/// Loopback listeners currently in `LISTEN` state.
 pub async fn listeners() -> Result<Vec<Listener>, Failure> {
+    #[cfg(windows)]
+    {
+        windows_listeners().await
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux_listeners().await
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_listeners().await
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        Err(Failure::new(
+            FailureCode::Internal,
+            "这个平台还没有端口枚举实现",
+        ))
+    }
+}
+
+// ---------------------------------------------------------------- Windows
+
+#[cfg(windows)]
+async fn windows_listeners() -> Result<Vec<Listener>, Failure> {
     let mut out = BTreeMap::<u16, Listener>::new();
     for family in ["TCP", "TCPv6"] {
         let text = match netstat(family).await {
@@ -90,30 +116,26 @@ pub async fn listeners() -> Result<Vec<Listener>, Failure> {
     Ok(out.into_values().collect())
 }
 
+#[cfg(windows)]
 async fn netstat(family: &str) -> Result<String, Failure> {
     let mut cmd = tokio::process::Command::new("netstat");
     cmd.args(["-ano", "-p", family]);
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
     cmd.creation_flags(crate::win::CREATE_NO_WINDOW);
 
-    let output = tokio::time::timeout(NETSTAT_TIMEOUT, cmd.output())
+    let output = tokio::time::timeout(TABLE_TIMEOUT, cmd.output())
         .await
-        .map_err(|_| {
-            Failure::new(FailureCode::Internal, "netstat 超时，无法枚举本机端口")
-        })?
+        .map_err(|_| Failure::new(FailureCode::Internal, "netstat 超时，无法枚举本机端口"))?
         .map_err(|err| {
-            Failure::new(
-                FailureCode::Internal,
-                format!("无法运行 netstat：{err}"),
-            )
+            Failure::new(FailureCode::Internal, format!("无法运行 netstat：{err}"))
         })?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// `  TCP    127.0.0.1:9808    0.0.0.0:0    LISTENING    4242`
+#[cfg(windows)]
 fn parse_netstat_line(line: &str) -> Option<Listener> {
     let mut fields = line.split_whitespace();
     let proto = fields.next()?;
@@ -130,14 +152,189 @@ fn parse_netstat_line(line: &str) -> Option<Listener> {
     // and the port are what the probe needs — but it is worth keeping.
     let pid = fields.next().and_then(|value| value.parse::<u32>().ok());
     let (host, port) = split_endpoint(local)?;
-    let loopback = matches!(
-        host.trim_matches(['[', ']']).to_ascii_lowercase().as_str(),
-        "127.0.0.1" | "::1" | "0:0:0:0:0:0:0:1" | "localhost"
-    );
-    if !loopback {
+    if !is_loopback(&host) {
         return None;
     }
     Some(Listener { port, bind: host, pid })
+}
+
+// ------------------------------------------------------------------ Linux
+
+#[cfg(target_os = "linux")]
+async fn linux_listeners() -> Result<Vec<Listener>, Failure> {
+    let mut out = BTreeMap::<u16, Listener>::new();
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            // IPv6 is commonly disabled; IPv4 is not optional.
+            if path.ends_with('6') {
+                continue;
+            }
+            return Err(Failure::new(
+                FailureCode::Internal,
+                format!("无法读取 {path}：这台机器可能没有挂载 /proc"),
+            ));
+        };
+        for (host, port) in parse_proc_net_tcp(&text) {
+            out.entry(port).or_insert(Listener {
+                port,
+                bind: host,
+                pid: None,
+            });
+        }
+    }
+    Ok(out.into_values().collect())
+}
+
+/// Parse `/proc/net/tcp{,6}` and keep loopback rows in `LISTEN` state.
+///
+/// Columns are `sl local_address rem_address st …`; the local address is
+/// `HEXIP:HEXPORT`, IPv4 as one little-endian `u32` and IPv6 as four of them.
+/// State `0A` is `TCP_LISTEN`.
+#[cfg(target_os = "linux")]
+fn parse_proc_net_tcp(text: &str) -> Vec<(String, u16)> {
+    let mut found = Vec::new();
+    for line in text.lines().skip(1) {
+        let mut fields = line.split_whitespace();
+        let Some(_slot) = fields.next() else {
+            continue;
+        };
+        let Some(local) = fields.next() else {
+            continue;
+        };
+        let Some(_remote) = fields.next() else {
+            continue;
+        };
+        let Some(state) = fields.next() else {
+            continue;
+        };
+        if state != "0A" {
+            continue;
+        }
+        let Some((raw_host, raw_port)) = local.split_once(':') else {
+            continue;
+        };
+        let Some(port) = u16::from_str_radix(raw_port, 16).ok() else {
+            continue;
+        };
+        let Some(host) = decode_proc_address(raw_host) else {
+            continue;
+        };
+        if is_loopback(&host) {
+            found.push((host, port));
+        }
+    }
+    found
+}
+
+/// `0100007F` → `127.0.0.1`; 32 hex chars → the `::1` spelling.
+#[cfg(target_os = "linux")]
+fn decode_proc_address(raw: &str) -> Option<String> {
+    match raw.len() {
+        8 => {
+            let value = u32::from_str_radix(raw, 16).ok()?;
+            let bytes = value.to_le_bytes();
+            Some(format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3]))
+        }
+        32 => {
+            let mut bytes = [0u8; 16];
+            for (index, chunk) in raw.as_bytes().as_chunks::<8>().0.iter().enumerate() {
+                let text = std::str::from_utf8(chunk).ok()?;
+                let value = u32::from_str_radix(text, 16).ok()?;
+                bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            if bytes[..15].iter().all(|byte| *byte == 0) && bytes[15] == 1 {
+                return Some("::1".to_string());
+            }
+            // A v4-mapped address (`::ffff:127.0.0.1`) is the same server.
+            if bytes[..10].iter().all(|byte| *byte == 0)
+                && bytes[10] == 0xff
+                && bytes[11] == 0xff
+            {
+                return Some(format!(
+                    "{}.{}.{}.{}",
+                    bytes[12], bytes[13], bytes[14], bytes[15]
+                ));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+// ------------------------------------------------------------------ macOS
+
+#[cfg(target_os = "macos")]
+async fn macos_listeners() -> Result<Vec<Listener>, Failure> {
+    let mut cmd = tokio::process::Command::new("netstat");
+    cmd.args(["-an", "-p", "tcp"]);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let output = tokio::time::timeout(TABLE_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| Failure::new(FailureCode::Internal, "netstat 超时，无法枚举本机端口"))?
+        .map_err(|err| {
+            Failure::new(FailureCode::Internal, format!("无法运行 netstat：{err}"))
+        })?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_macos_netstat(&text))
+}
+
+/// `tcp4       0      0  127.0.0.1.9808         *.*                    LISTEN`
+///
+/// BSD `netstat` separates the port with a dot and does not print an owner pid,
+/// so that field stays `None`.
+#[cfg(target_os = "macos")]
+fn parse_macos_netstat(text: &str) -> Vec<Listener> {
+    let mut out = BTreeMap::<u16, Listener>::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 6 {
+            continue;
+        }
+        if !fields[0].starts_with("tcp") {
+            continue;
+        }
+        // The state column can be `LISTEN` on its own or be followed by options.
+        if !fields.iter().any(|field| *field == "LISTEN") {
+            continue;
+        }
+        let Some(local) = fields.iter().find(|field| field.contains('.')) else {
+            continue;
+        };
+        let Some((host, port)) = split_dotted_endpoint(local) else {
+            continue;
+        };
+        if !is_loopback(&host) {
+            continue;
+        }
+        out.entry(port).or_insert(Listener {
+            port,
+            bind: host,
+            pid: None,
+        });
+    }
+    out.into_values().collect()
+}
+
+/// `127.0.0.1.9808` → `("127.0.0.1", 9808)`; `::1.9808` → `("::1", 9808)`.
+#[cfg(target_os = "macos")]
+fn split_dotted_endpoint(endpoint: &str) -> Option<(String, u16)> {
+    let (host, port) = endpoint.rsplit_once('.')?;
+    let port = port.parse::<u16>().ok()?;
+    if host.is_empty() || host == "*" {
+        return None;
+    }
+    Some((host.to_string(), port))
+}
+
+// ---------------------------------------------------------------- shared
+
+fn is_loopback(host: &str) -> bool {
+    matches!(
+        host.trim_matches(['[', ']']).to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "::1" | "0:0:0:0:0:0:0:1" | "localhost"
+    )
 }
 
 /// The origin to probe, and the one to show the user.
@@ -155,6 +352,7 @@ fn origin_for(listener: &Listener) -> String {
     }
 }
 
+#[cfg(any(windows, test))]
 fn split_endpoint(endpoint: &str) -> Option<(String, u16)> {
     let (host, port) = endpoint.rsplit_once(':')?;
     Some((host.to_string(), port.parse::<u16>().ok()?))
@@ -201,6 +399,7 @@ pub async fn scan(timeout: Duration) -> Result<Vec<Instance>, Failure> {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn parses_loopback_listeners_only() {
         let loopback = "  TCP    127.0.0.1:9808         0.0.0.0:0              LISTENING       4242";
@@ -225,6 +424,49 @@ mod tests {
         // The IPv6 header and the UDP table are skipped without a fuss.
         assert!(parse_netstat_line("活动连接").is_none());
         assert!(parse_netstat_line("  UDP    0.0.0.0:5353           *:*                                    4").is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_proc_net_tcp_loopback_only() {
+        // 127.0.0.1:9808 listening, 0.0.0.0:22 listening, established ignored.
+        let text = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:2648 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 1
+   1: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2
+   2: 0100007F:2648 0100007F:CCCC 01 00000000:00000000 00:00000000 00000000  1000        0 3
+";
+        let found = parse_proc_net_tcp(text);
+        assert!(found.contains(&("127.0.0.1".to_string(), 9808)));
+        assert_eq!(found.len(), 1, "wildcard and established rows are dropped");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn decodes_ipv6_loopback() {
+        assert_eq!(
+            decode_proc_address("00000000000000000000000001000000").as_deref(),
+            Some("::1")
+        );
+        assert_eq!(
+            decode_proc_address("0000000000000000ffff00000100007f").as_deref(),
+            Some("127.0.0.1")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_macos_netstat_loopback_only() {
+        let text = "\
+tcp4       0      0  127.0.0.1.9808         *.*                    LISTEN
+tcp4       0      0  0.0.0.0.22             *.*                    LISTEN
+tcp6       0      0  ::1.3080               *.*                    LISTEN
+tcp4       0      0  127.0.0.1.5555         127.0.0.1.50000        ESTABLISHED
+";
+        let found = parse_macos_netstat(text);
+        let ports: Vec<u16> = found.iter().map(|listener| listener.port).collect();
+        assert_eq!(ports, vec![9808, 3080]);
+        assert_eq!(found[1].bind, "::1");
     }
 
     /// Regression: the origin used to be hard-coded to `127.0.0.1`, so a
@@ -255,28 +497,26 @@ mod tests {
         assert_eq!(split_endpoint("no-port"), None);
     }
 
-    /// Live checks. They spawn `netstat` and talk to whatever is listening, so
-    /// they are opt-in:
+    /// Live checks. They read this machine's real port table and talk to
+    /// whatever is listening, so they are opt-in:
     ///
-    /// ```powershell
-    /// $env:DSHELL_SCAN_EXPECT='http://127.0.0.1:11443'
-    /// cargo test live_ -- --ignored --nocapture
+    /// ```text
+    /// DSHELL_SCAN_EXPECT=http://127.0.0.1:11443 cargo test live_ -- --ignored
     /// ```
     #[tokio::test]
-    #[ignore = "needs netstat and this machine's real port table"]
+    #[ignore = "needs this machine's real port table"]
     async fn live_listeners_include_loopback_only() {
-        let found = listeners().await.expect("netstat");
+        let found = listeners().await.expect("port table");
         println!("{} loopback listeners", found.len());
         for listener in found.iter().take(20) {
             println!("  {} :{}", listener.bind, listener.port);
         }
-        assert!(!found.is_empty(), "a Windows box always has some");
         assert!(found.iter().all(|listener| listener.port > 0));
     }
 
     /// Proves the whole discovery path against a real `dsh web`: the port is
-    /// found by `netstat` and identified by the 401 an unauthenticated `GET /`
-    /// returns. Point `DSHELL_SCAN_EXPECT` at that instance's origin.
+    /// found by the platform table and identified by the 401 an unauthenticated
+    /// `GET /` returns. Point `DSHELL_SCAN_EXPECT` at that instance's origin.
     #[tokio::test]
     #[ignore = "needs a real dsh web listening on this machine"]
     async fn live_scan_finds_a_running_dsh() {

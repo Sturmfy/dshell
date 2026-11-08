@@ -43,7 +43,12 @@ pub enum NodeSource {
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentSnapshot {
     pub node: Option<NodeInfo>,
-    pub webview2_version: Option<String>,
+    /// The host's web engine (WebView2 / WebKitGTK / WebKit), so the UI never
+    /// tells a Linux user to install a Windows component.
+    pub webview: crate::platform::WebviewRuntime,
+    /// `std::env::consts::OS`: `windows`, `linux`, `macos`, … Some settings only
+    /// exist on one platform (the reduced-motion override is a Chromium switch).
+    pub platform: String,
     pub pnpm: Option<String>,
     /// Whether dshell can install pnpm itself, and how. See [`PnpmInstall`].
     #[serde(default)]
@@ -89,7 +94,8 @@ pub async fn detect(data_root: &Path) -> EnvironmentSnapshot {
     let pnpm_install = plan_pnpm_install(node.as_ref(), pnpm.is_some()).await;
     EnvironmentSnapshot {
         node,
-        webview2_version: webview2_version(),
+        webview: crate::platform::webview_runtime(),
+        platform: std::env::consts::OS.to_string(),
         pnpm,
         pnpm_install,
         notes: Vec::new(),
@@ -217,6 +223,16 @@ fn pnpm_dirs(node: Option<&NodeInfo>) -> Vec<PathBuf> {
             dirs.push(base.join("pnpm"));
         }
     }
+    // Unix package managers do not use the Windows shim directories: npm's
+    // global prefix is usually `/usr/local`, Homebrew's is `/opt/homebrew`, and
+    // pnpm's default store lives under the user's home.
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".local").join("bin"));
+        dirs.push(home.join(".local").join("share").join("pnpm"));
+    }
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
     dirs
 }
 
@@ -454,7 +470,15 @@ fn path_dirs() -> Vec<PathBuf> {
 }
 
 fn shim(dir: &Path, name: &str) -> Option<PathBuf> {
-    for ext in [".cmd", ".exe", ""] {
+    // Windows resolves commands through PATHEXT (`npx.cmd`, `node.exe`); Unix
+    // has no extension in the common case, with `.cmd` kept as a last resort
+    // for a tree that was copied from Windows.
+    #[cfg(windows)]
+    const EXTENSIONS: [&str; 3] = [".cmd", ".exe", ""];
+    #[cfg(not(windows))]
+    const EXTENSIONS: [&str; 2] = ["", ".cmd"];
+
+    for ext in EXTENSIONS {
         let candidate = dir.join(format!("{name}{ext}"));
         if candidate.is_file() {
             return Some(candidate);
@@ -535,77 +559,6 @@ pub fn missing_failure() -> Failure {
     .with_action(Action::primary("open-nodejs-org", "下载 Node.js（官方）"))
     .with_action(Action::secondary("use-external-binary", "使用其他后端二进制"))
     .with_action(Action::secondary("redetect", "重新检测"))
-}
-
-/// The WebView2 runtime is what makes the whole app possible. dshell does not
-/// ship it, so on a machine without it there is no window to render an error in.
-pub fn webview2_version() -> Option<String> {
-    #[cfg(windows)]
-    {
-        use std::ffi::{c_void, OsStr};
-        use std::os::windows::ffi::OsStrExt;
-
-        const HKEY_LOCAL_MACHINE: usize = 0x8000_0002;
-        const KEY_READ: u32 = 0x2_0019;
-        const REG_SZ: u32 = 1;
-        type Hkey = *mut c_void;
-
-        extern "system" {
-            fn RegOpenKeyExW(
-                key: Hkey,
-                subkey: *const u16,
-                options: u32,
-                desired: u32,
-                result: *mut Hkey,
-            ) -> i32;
-            fn RegQueryValueExW(
-                key: Hkey,
-                name: *const u16,
-                reserved: *mut u32,
-                kind: *mut u32,
-                data: *mut u8,
-                len: *mut u32,
-            ) -> i32;
-            fn RegCloseKey(key: Hkey) -> i32;
-        }
-
-        fn wide(s: &str) -> Vec<u16> {
-            OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
-        }
-
-        let subkey =
-            wide(r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}");
-        let mut key: Hkey = std::ptr::null_mut();
-        if unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE as Hkey, subkey.as_ptr(), 0, KEY_READ, &mut key) } != 0 {
-            return None;
-        }
-        let name = wide("pv");
-        let mut kind: u32 = 0;
-        let mut buf = vec![0u8; 512];
-        let mut len = buf.len() as u32;
-        let rc = unsafe {
-            RegQueryValueExW(key, name.as_ptr(), std::ptr::null_mut(), &mut kind, buf.as_mut_ptr(), &mut len)
-        };
-        unsafe { RegCloseKey(key) };
-        if rc != 0 || kind != REG_SZ {
-            return None;
-        }
-        let wide_slice: Vec<u16> = buf[..len as usize]
-            .as_chunks::<2>().0.iter()
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .take_while(|c| *c != 0)
-            .collect();
-        let text = String::from_utf16_lossy(&wide_slice).trim().to_string();
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
 }
 
 #[cfg(test)]

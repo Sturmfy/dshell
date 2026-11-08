@@ -14,6 +14,7 @@
 // preference under the cursor does not throw the reader back to the top.
 
 import { api, asFailure } from '../ipc';
+import { PRIMARY_MODIFIER } from '../platform';
 import { PageStore } from '../store';
 import type { AppInfo, Config } from '../types';
 import { bootPage, h, preserveView, toastView } from './shared';
@@ -80,7 +81,7 @@ const SECTIONS: SectionSpec[] = [
     group: '系统',
     icon: 'terminal',
     color: 'var(--set-c-emerald)',
-    search: '运行环境 Node WebView2 pnpm 检测 依赖',
+    search: '运行环境 Node WebView2 WebKit pnpm 检测 依赖',
   },
   {
     id: 'runtimes',
@@ -240,7 +241,7 @@ function rail(info: AppInfo): HTMLElement {
     input.blur();
   });
   search.appendChild(input);
-  search.appendChild(h('kbd', { text: 'Ctrl K' }));
+  search.appendChild(h('kbd', { text: `${PRIMARY_MODIFIER} K` }));
   railEl.appendChild(search);
 
   const nav = h('nav', { class: 'set-nav', 'aria-label': '设置分类' });
@@ -509,7 +510,7 @@ function overviewNodes(info: AppInfo): Node[] {
     stat({
       label: '运行环境',
       value: node ? `Node ${node.version}` : '未检测到 Node.js',
-      sub: `WebView2 ${info.environment.webview2Version ?? '缺失'} · pnpm ${info.environment.pnpm ?? '缺失'}`,
+      sub: `${info.environment.webview.name} ${info.environment.webview.version ?? '就绪'} · pnpm ${info.environment.pnpm ?? '缺失'}`,
       badge: badge(`${ready} / ${total}`, ready === total ? 'ok' : 'warn', true),
       icon: 'terminal',
     }),
@@ -535,7 +536,7 @@ function overviewNodes(info: AppInfo): Node[] {
     quickAction('打开数据根', info.root.path, 'folder', () => openRoot(info)),
   );
   grid.appendChild(
-    quickAction('重新检测环境', 'Node、WebView2 与 pnpm', 'terminal', () => {
+    quickAction('重新检测环境', 'Node、Web 引擎与 pnpm', 'terminal', () => {
       void store.refreshInfo(true);
     }),
   );
@@ -671,15 +672,19 @@ function generalNodes(info: AppInfo): Node[] {
     desc: 'DSH 内容页的动画策略；dshell 自己的页面不受影响。',
     icon: 'zap',
   });
-  motion.body.appendChild(
-    settingRow(
-      '在 DSH 内容页保持动画播放',
-      '即使 Windows 开启了「减少动态效果」，DSH 的工作圆环等动画仍会播放。修改后新建的选项卡生效。',
-      switchControl('在 DSH 内容页保持动画播放', config.forceDshMotion, (checked) =>
-        void saveConfig({ forceDshMotion: checked }),
+  // The override is a Chromium browser argument; WebKit already follows the
+  // system setting, so showing the switch elsewhere would promise nothing.
+  if (info.environment.platform === 'windows') {
+    motion.body.appendChild(
+      settingRow(
+        '在 DSH 内容页保持动画播放',
+        '即使 Windows 开启了「减少动态效果」，DSH 的工作圆环等动画仍会播放。修改后新建的选项卡生效。',
+        switchControl('在 DSH 内容页保持动画播放', config.forceDshMotion, (checked) =>
+          void saveConfig({ forceDshMotion: checked }),
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   return [tabs.root, closing.root, motion.root];
 }
@@ -892,7 +897,7 @@ function environmentNodes(info: AppInfo): Node[] {
     notice(
       'info',
       h('strong', { text: '连接已有实例不需要本地依赖。' }),
-      'Node.js 只用于 dshell 启动新的本地后端；WebView2 由 Windows 提供。',
+      'Node.js 只用于 dshell 启动新的本地后端；界面由系统提供的 Web 引擎渲染（Windows 是 WebView2，macOS/Linux 是 WebKit）。',
     ),
   ];
 }
@@ -909,7 +914,6 @@ function environmentChecks(info: AppInfo): { items: CheckView[]; ready: number; 
   const env = info.environment;
   const node = env.node;
   const nodeOk = !!node && !node.versionIssue;
-  const webview2Ok = !!env.webview2Version;
   const pnpmOk = !!env.pnpm;
   const install = env.pnpmInstall ?? {};
 
@@ -923,10 +927,11 @@ function environmentChecks(info: AppInfo): { items: CheckView[]; ready: number; 
         : '未检测到 · 启动本地不可用',
     },
     {
-      name: 'WebView2',
-      ok: webview2Ok,
-      badge: webview2Ok ? '就绪' : '缺失',
-      value: env.webview2Version ?? '未检测到',
+      // Always present: this window is already rendered by that engine.
+      name: env.webview.name,
+      ok: true,
+      badge: '就绪',
+      value: env.webview.version ?? '由系统提供',
     },
     {
       name: 'pnpm',
@@ -954,7 +959,7 @@ function environmentChecks(info: AppInfo): { items: CheckView[]; ready: number; 
 
   return {
     items,
-    ready: [nodeOk, webview2Ok, pnpmOk].filter(Boolean).length,
+    ready: [nodeOk, true, pnpmOk].filter(Boolean).length,
     total: 3,
   };
 }
@@ -970,7 +975,7 @@ function pnpmHint(info: AppInfo): string | null {
 function environmentScore(info: AppInfo): { ready: number; total: number } {
   const env = info.environment;
   const nodeOk = !!env.node && !env.node.versionIssue;
-  const ready = [nodeOk, !!env.webview2Version, !!env.pnpm].filter(Boolean).length;
+  const ready = [nodeOk, !!env.webview.name, !!env.pnpm].filter(Boolean).length;
   return { ready, total: 3 };
 }
 
@@ -1089,9 +1094,11 @@ function onboardingNodes(info: AppInfo): Node[] {
   facts.appendChild(
     fact(
       '环境检查',
-      `Node.js ${info.environment.node ? '可用' : '缺失'} · WebView2 ${
-        info.environment.webview2Version ? '可用' : '缺失'
-      } · pnpm ${info.environment.pnpm ? '可用' : '缺失'}`,
+      `Node.js ${info.environment.node ? '可用' : '缺失'} · ${
+        info.environment.webview.name
+      } ${info.environment.webview.version ?? '就绪'} · pnpm ${
+        info.environment.pnpm ? '可用' : '缺失'
+      }`,
       true,
     ),
   );
