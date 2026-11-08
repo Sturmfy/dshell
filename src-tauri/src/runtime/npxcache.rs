@@ -195,16 +195,26 @@ pub struct DistTags {
 /// channels (`latest`, `alpha`) are exactly these tags. Failures are silent — the
 /// card simply keeps saying what the disk says.
 pub async fn dist_tags(npm: &Path) -> Option<DistTags> {
+    dist_tags_with_timeout(npm, std::time::Duration::from_secs(25)).await
+}
+
+/// [`dist_tags`] with a caller-chosen budget.
+///
+/// Startup uses a shorter one than a page does: it must not hold the user's
+/// restored tabs hostage to a dead registry. `kill_on_drop` matters here: without
+/// it a timed-out `npm view` would keep running after the future is dropped.
+pub async fn dist_tags_with_timeout(npm: &Path, timeout: std::time::Duration) -> Option<DistTags> {
     let mut cmd = tokio::process::Command::new(npm);
     cmd.args(["view", PACKAGE, "dist-tags", "--json"]);
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.env("NO_COLOR", "1");
+    cmd.kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(crate::win::CREATE_NO_WINDOW);
 
-    let output = tokio::time::timeout(std::time::Duration::from_secs(25), cmd.output())
+    let output = tokio::time::timeout(timeout, cmd.output())
         .await
         .ok()?
         .ok()?;

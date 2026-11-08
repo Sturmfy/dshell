@@ -255,6 +255,32 @@ $env:DSHELL_DEBUG = '1'
 两条保护：**有未提交修改的 checkout 不会被 `reset --hard`**（跳过更新并提示）；
 **断网只降级为"按现有提交启动"**，不会把一个能用的 checkout 变得不可用。
 
+### 重启后本地选项卡的版本检测
+
+重启 dshell 时，恢复的本地选项卡会先打开加载页，再经过**一次**版本判断才 spawn：
+
+- **目标版本**取 npm `dist-tags.latest` 与构建内 `PINNED_DSH_VERSION` 中较新的一个
+  （SemVer 比较）。registry 不可达时只用 pin；两者都不合法则不检测。pin 也算目标，
+  是因为升级 dshell 本身可能带来一个比本机 registry 可见版本更新的、已验证的版本。
+- **只检查 npx** 且 `package_spec` 是具体版本的选项卡。`@latest` / `@alpha` / 范围写法
+  本来就会随通道浮动；`npm` 运行时目前没有安装/更新路径（`resolve` 忽略它的
+  `package_spec`）；源码版每次启动自行同步；本地维护目录与其他二进制归用户所有，
+  均不参与。
+- **`dshStartupPolicy` 三值**：`ask`（默认，弹一次原生 TaskDialog）、`keep`（不联网，
+  按保存的版本启动）、`update`（不弹窗，静默切换）。提示里的「记住选择」把本次决定
+  直接写回这个字段；取消 / Esc / 关闭只影响本次，不记住。
+- **只升不降**：目标必须严格高于当前版本；多个选项卡合并成一次提示，不同旧版本一起
+  升到同一个目标。
+- **只改 `runtime.package_spec`**：`instance_key` 由 workspace + `DSH_HOME` 决定，不包含
+  运行时版本，所以该选项卡的 webview data directory 不变，登录态与站点数据继续有效。
+- **失败一律按旧版本启动**：registry 超时（8 秒）、npm 缺失、TaskDialog 无法加载、
+  没有 owner 窗口，都只写 `DSHELL_DEBUG` 日志，不阻塞启动。TaskDialog 通过
+  `LoadLibraryW` + `GetProcAddress` 动态解析：静态导入 `comctl32!TaskDialogIndirect`
+  会让没有 Common Controls v6 清单的测试二进制在**加载阶段**失败，而不是让一次调用
+  失败，所以这里刻意不静态链接。
+- **范围**：手动「新建连接 → 启动」与右键「重启后端」不经过这一步；`dshVersionChannel`
+  仍只决定新选项卡用哪个版本。
+
 ### 「已经有实例在跑」的处理
 
 本地启动前若 dshell 正在监管一个本地后端，则默认**拒绝**并列出它（可「切换过去」），
@@ -444,11 +470,12 @@ src-tauri/src/
     manager.rs        选项卡管理、webview 编排、事件泵、页面选项卡的创建与去重
     state.rs          TabSpec（落盘）/ TabRuntime（仅内存）/ PageKind
   commands.rs        invoke 面（全部 async）
+  upgrade.rs         重启恢复时的 DSH 版本检测 + keep/update/ask 决策
   tray.rs            系统托盘：原生菜单、状态圆点、关闭到托盘策略
   win.rs             Job object、广播环境变量变更、窗口最大化/最小化状态
   window_state.rs    ★ 主窗口几何：window.json、物理像素与显示器匹配（纯函数 + 单测）
   env.rs             写 HKCU\Environment、可写性探测
-  dialog.rs          原生目录/文件选择器
+  dialog.rs          原生目录/文件选择器 + 版本升级提示（TaskDialog）
 ```
 
 **为什么选项卡条仍是独立 webview**：它是窗口唯一的拖拽区与窗口按钮所在。

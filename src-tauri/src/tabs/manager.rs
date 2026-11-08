@@ -819,6 +819,31 @@ impl TabManager {
             })
     }
 
+    /// Replace the runtime of a restored local tab before its first spawn.
+    ///
+    /// Used by the startup version check: the tab is already open (showing its
+    /// loading page), and only its `RuntimeSpec` changes. The instance identity
+    /// is workspace + `DSH_HOME`, not the version, so the webview storage
+    /// directory — and with it the login — stays where it was.
+    ///
+    /// Returns `false` when the tab is gone or is not a local spawn, which the
+    /// caller must not treat as a successful update.
+    pub async fn set_runtime(&self, id: &str, runtime: RuntimeSpec) -> bool {
+        let mut tabs = self.tabs.lock().await;
+        let Some(entry) = tabs.get_mut(id) else {
+            return false;
+        };
+        match &mut entry.runtime.spec.connection {
+            ConnectionKind::LocalSpawn {
+                runtime: current, ..
+            } => {
+                *current = runtime;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub async fn command_line(&self, id: &str) -> Option<String> {
         self.tabs
             .lock()

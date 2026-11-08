@@ -1771,23 +1771,9 @@ async fn runtime_state(state: &AppState, deep: bool) -> LocalRuntimeState {
 /// pinned channel never needs it, and a failure just leaves "是否有更新" unknown
 /// instead of blocking the card.
 async fn dist_tags(state: &AppState) -> Option<crate::runtime::npxcache::DistTags> {
-    const TTL: Duration = Duration::from_secs(600);
-    {
-        let cached = state.dist_tags.lock().await;
-        if let Some((at, tags)) = cached.as_ref() {
-            if at.elapsed() < TTL {
-                return Some(tags.clone());
-            }
-        }
-    }
-    let node = state.node().await;
-    let npm = crate::runtime::node::find_npm(node.as_ref())?;
-    let tags = crate::runtime::npxcache::dist_tags(&npm).await?;
-    {
-        let mut cached = state.dist_tags.lock().await;
-        *cached = Some((std::time::Instant::now(), tags.clone()));
-    }
-    Some(tags)
+    // The page may wait a little longer than startup does; the cache itself is
+    // shared (see `AppState::registry_dist_tags`).
+    state.registry_dist_tags(Duration::from_secs(25)).await
 }
 
 /// Prepare a local runtime so the launch after it is a launch and nothing else.

@@ -24,6 +24,7 @@
 //! | [`tabs`] | the **only** module allowed to touch multi-webview APIs |
 //! | [`bridge`] | the narrow WebView2 message bridge injected into content tabs |
 //! | [`picker`] | window-owned native directory/file pickers |
+//! | [`upgrade`] | startup DSH version check for restored local npx tabs |
 //! | [`webview_settings`] | WebView2 policy for dshell's own chrome and page tabs |
 //! | [`tray`] | the notification-area icon, its native menu, and close-to-tray |
 //! | [`window_state`] | the saved window frame (`window.json`) and its monitor |
@@ -49,6 +50,7 @@ pub mod runtime;
 pub mod state;
 pub mod tabs;
 pub mod tray;
+pub mod upgrade;
 pub mod webview_settings;
 pub mod win;
 pub mod window_state;
@@ -63,7 +65,7 @@ use tauri::{
 use crate::config::Config;
 use crate::state::AppState;
 use crate::tabs::manager::{TabManager, CHROME_LABEL};
-use crate::tabs::state::ConnectionKind;
+use crate::tabs::state::{ConnectionKind, TabSpec};
 
 pub const MAIN_WINDOW: &str = "main";
 
@@ -355,7 +357,7 @@ fn setup_app(
     // The resize handler may not have run yet for the size applied above.
     state.manager.relayout();
 
-    restore_tabs(state);
+    restore_tabs(handle.clone(), state);
     Ok(())
 }
 /// Boot sequence: restore the user's tabs, then make sure the window shows
@@ -374,7 +376,12 @@ fn setup_app(
 ///
 /// The last row is the point of the change that made dshell's pages tabs: an
 /// empty window with a blank content area is not a state this app has any more.
-fn restore_tabs(state: Arc<AppState>) {
+///
+/// Restored local backends are opened first and spawned after one
+/// [`crate::upgrade`] decision. That keeps the "loading" tab visible while the
+/// optional registry check runs, and makes the version prompt a per-launch
+/// question instead of a per-tab one.
+fn restore_tabs(app: tauri::AppHandle, state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
         let (file, note) = state.load_tabs().await;
         if let Some(note) = note {
@@ -390,6 +397,10 @@ fn restore_tabs(state: Arc<AppState>) {
             file.order.clone()
         };
 
+        // Local backends are opened first but spawned after one version
+        // decision: the loading page is already visible while the registry
+        // check/prompt runs, and nothing starts twice.
+        let mut local_specs: Vec<TabSpec> = Vec::new();
         for id in order {
             // A `tabs.json` written by an older build can still contain page
             // entries; they are recreated below from config instead.
@@ -411,10 +422,7 @@ fn restore_tabs(state: Arc<AppState>) {
                         .await
                         .is_ok()
                     {
-                        let state_for_spawn = state.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = state_for_spawn.manager.spawn_connection(spec).await;
-                        });
+                        local_specs.push(spec);
                     }
                 }
                 ConnectionKind::LocalAttach { .. } | ConnectionKind::Remote { .. } => {
@@ -454,6 +462,36 @@ fn restore_tabs(state: Arc<AppState>) {
                     }
                 }
                 ConnectionKind::Page { .. } => {}
+            }
+        }
+
+        if !local_specs.is_empty() {
+            // One check for the whole launch: the user should answer a version
+            // question once, not once per tab. `decide` is fail-open — anything
+            // except an accepted newer version means "start the saved specs".
+            let proposal = crate::upgrade::decide(&app, &state, &local_specs).await;
+            for mut spec in local_specs {
+                if let Some(proposal) = proposal.as_ref() {
+                    if proposal.includes(&spec.id) {
+                        if let Some(upgraded) =
+                            crate::upgrade::with_version(&spec, &proposal.latest)
+                        {
+                            if let ConnectionKind::LocalSpawn { runtime, .. } =
+                                &upgraded.connection
+                            {
+                                state
+                                    .manager
+                                    .set_runtime(&spec.id, runtime.clone())
+                                    .await;
+                            }
+                            spec = upgraded;
+                        }
+                    }
+                }
+                let state_for_spawn = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = state_for_spawn.manager.spawn_connection(spec).await;
+                });
             }
         }
 

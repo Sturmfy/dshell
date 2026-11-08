@@ -24,6 +24,40 @@
 //! The owner window is passed through as well: an unowned dialog is not modal to
 //! dshell and can open *behind* it, which on a maximized window looks like a
 //! button that does nothing.
+//!
+//! A third dialog lives here too: the startup DSH upgrade prompt. It uses
+//! `TaskDialogIndirect` because that is the only native control that gives two
+//! custom button labels *and* a verification checkbox. The function is resolved
+//! at runtime instead of through a static `comctl32` import: a test binary may
+//! not carry the Common Controls v6 manifest, and a static import would make
+//! `cargo test` fail to start rather than fail the one call. Missing v6 simply
+//! means "no prompt", which the caller treats as "keep the saved version".
+
+/// What the startup version prompt asks, and the labels it shows.
+#[derive(Debug, Clone)]
+pub struct ChoicePrompt {
+    pub window_title: String,
+    pub instruction: String,
+    pub content: String,
+    /// Text next to the verification checkbox.
+    pub verification: String,
+    pub footer: String,
+    pub accept_label: String,
+    pub decline_label: String,
+}
+
+/// The user's answer to [`ChoicePrompt`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChoiceOutcome {
+    Accept {
+        remember: bool,
+    },
+    Decline {
+        remember: bool,
+    },
+    /// Esc, the close button, or a dialog that could not be used.
+    Cancelled,
+}
 
 #[cfg(windows)]
 mod imp {
@@ -358,6 +392,268 @@ pub fn pick_directory(
 #[cfg(not(windows))]
 pub fn pick_file(_title: Option<&str>, _owner: Option<isize>) -> Result<Option<String>, String> {
     Ok(None)
+}
+
+/// `TaskDialogIndirect`-backed choice prompt for the startup DSH upgrade.
+///
+/// `owner` is the main window HWND; a null owner is not used by the caller for
+/// the same reason the pickers require one (an unowned dialog can open behind
+/// the window).
+#[cfg(windows)]
+pub fn ask_choice(owner: Option<isize>, prompt: &ChoicePrompt) -> Result<ChoiceOutcome, String> {
+    choice::ask(owner, prompt)
+}
+
+#[cfg(not(windows))]
+pub fn ask_choice(_owner: Option<isize>, _prompt: &ChoicePrompt) -> Result<ChoiceOutcome, String> {
+    // The application only ships on Windows. Keeping the caller's code
+    // platform-independent is worth more than a fake prompt: "cancelled" means
+    // "start the saved version", which is the safe answer everywhere.
+    Ok(ChoiceOutcome::Cancelled)
+}
+
+#[cfg(windows)]
+mod choice {
+    use std::ffi::{c_void, OsStr};
+    use std::os::windows::ffi::OsStrExt;
+
+    use super::{ChoiceOutcome, ChoicePrompt};
+
+    const ACCEPT_ID: i32 = 1001;
+    const DECLINE_ID: i32 = 1002;
+    /// `IDCANCEL`, returned by Esc and the title-bar close button.
+    const ID_CANCEL: i32 = 2;
+
+    const TDF_ALLOW_DIALOG_CANCELLATION: u32 = 0x0008;
+    const TDF_POSITION_RELATIVE_TO_WINDOW: u32 = 0x1000;
+
+    /// `TASKDIALOG_BUTTON`, packed to 1 byte like the SDK's `pshpack1` region:
+    /// 4 + 8 = 12 bytes on x64 (unpacked it would be 16).
+    #[repr(C, packed(1))]
+    struct TaskDialogButton {
+        id: i32,
+        text: *const u16,
+    }
+
+    /// `TASKDIALOGCONFIG`, packed to 1 byte like the SDK's `pshpack1` region:
+    /// **160 bytes** on x64. `cb_size` must be this exact value or Windows
+    /// answers `E_INVALIDARG` before showing anything.
+    #[repr(C, packed(1))]
+    struct TaskDialogConfig {
+        cb_size: u32,
+        hwnd_parent: *mut c_void,
+        h_instance: *mut c_void,
+        flags: u32,
+        common_buttons: u32,
+        window_title: *const u16,
+        main_icon: *const u16,
+        main_instruction: *const u16,
+        content: *const u16,
+        button_count: u32,
+        buttons: *const TaskDialogButton,
+        default_button: i32,
+        radio_count: u32,
+        radio_buttons: *const TaskDialogButton,
+        default_radio: i32,
+        verification_text: *const u16,
+        expanded_information: *const u16,
+        expanded_control_text: *const u16,
+        collapsed_control_text: *const u16,
+        footer_icon: *const u16,
+        footer: *const u16,
+        callback: *mut c_void,
+        callback_data: isize,
+        width: u32,
+    }
+
+    type TaskDialogIndirect =
+        unsafe extern "system" fn(*const TaskDialogConfig, *mut i32, *mut i32, *mut i32) -> i32;
+
+    // `GetProcAddress` needs the module by name, not a static import: see the
+    // module docs. `kernel32` is always linked, so no `#[link]` is needed.
+    extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+        fn FreeLibrary(module: *mut c_void) -> i32;
+    }
+
+    fn wide(value: &str) -> Vec<u16> {
+        OsStr::new(value)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    pub(super) fn ask(
+        owner: Option<isize>,
+        prompt: &ChoicePrompt,
+    ) -> Result<ChoiceOutcome, String> {
+        let title = wide(&prompt.window_title);
+        let instruction = wide(&prompt.instruction);
+        let content = wide(&prompt.content);
+        let verification = wide(&prompt.verification);
+        let footer = wide(&prompt.footer);
+        let accept = wide(&prompt.accept_label);
+        let decline = wide(&prompt.decline_label);
+
+        let buttons = [
+            TaskDialogButton {
+                id: ACCEPT_ID,
+                text: accept.as_ptr(),
+            },
+            TaskDialogButton {
+                id: DECLINE_ID,
+                text: decline.as_ptr(),
+            },
+        ];
+
+        let config = TaskDialogConfig {
+            cb_size: std::mem::size_of::<TaskDialogConfig>() as u32,
+            hwnd_parent: owner.map_or(std::ptr::null_mut(), |handle| handle as *mut c_void),
+            h_instance: std::ptr::null_mut(),
+            flags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
+            common_buttons: 0,
+            window_title: title.as_ptr(),
+            main_icon: std::ptr::null(),
+            main_instruction: instruction.as_ptr(),
+            content: content.as_ptr(),
+            button_count: buttons.len() as u32,
+            buttons: buttons.as_ptr(),
+            // Safe default: Enter keeps the version the tab was saved with.
+            default_button: DECLINE_ID,
+            radio_count: 0,
+            radio_buttons: std::ptr::null(),
+            default_radio: 0,
+            verification_text: verification.as_ptr(),
+            expanded_information: std::ptr::null(),
+            expanded_control_text: std::ptr::null(),
+            collapsed_control_text: std::ptr::null(),
+            footer_icon: std::ptr::null(),
+            footer: footer.as_ptr(),
+            callback: std::ptr::null_mut(),
+            callback_data: 0,
+            width: 0,
+        };
+
+        let module_name = wide("comctl32.dll");
+        let module = unsafe { LoadLibraryW(module_name.as_ptr()) };
+        if module.is_null() {
+            return Err("无法加载 comctl32.dll（TaskDialog 需要 Common Controls v6）".into());
+        }
+        let proc = unsafe { GetProcAddress(module, c"TaskDialogIndirect".as_ptr().cast()) };
+        if proc.is_null() {
+            unsafe { FreeLibrary(module) };
+            return Err(
+                "comctl32.dll 没有 TaskDialogIndirect 导出（缺少 Common Controls v6）".into(),
+            );
+        }
+        // SAFETY: `proc` came from comctl32 and `TaskDialogIndirect` has exactly
+        // this C signature in commctrl.h. The layout tests below pin the packed
+        // TASKDIALOGCONFIG / TASKDIALOG_BUTTON shapes the function reads.
+        let task_dialog: TaskDialogIndirect = unsafe { std::mem::transmute(proc) };
+        let mut button = 0_i32;
+        let mut verification_checked = 0_i32;
+        let result = unsafe {
+            task_dialog(
+                &config,
+                &mut button,
+                std::ptr::null_mut(),
+                &mut verification_checked,
+            )
+        };
+        unsafe { FreeLibrary(module) };
+        if result < 0 {
+            return Err(format!(
+                "TaskDialogIndirect 失败（HRESULT 0x{:08X}）",
+                result as u32
+            ));
+        }
+        Ok(outcome_from(button, verification_checked))
+    }
+
+    /// Map the dialog's button/checkbox state to the caller's answer.
+    ///
+    /// Kept separate from the Win32 call so the mapping (including "cancel is
+    /// not a remembered decision") is testable without a human.
+    pub(super) fn outcome_from(button: i32, verification: i32) -> ChoiceOutcome {
+        match button {
+            ACCEPT_ID => ChoiceOutcome::Accept {
+                remember: verification != 0,
+            },
+            DECLINE_ID => ChoiceOutcome::Decline {
+                remember: verification != 0,
+            },
+            ID_CANCEL => ChoiceOutcome::Cancelled,
+            _ => ChoiceOutcome::Cancelled,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::mem::{offset_of, size_of};
+
+        use super::*;
+
+        /// `TASKDIALOGCONFIG` is inside the SDK's `pshpack1` region on purpose.
+        /// Declaring it with default alignment gives a larger `cb_size`, and
+        /// Windows answers `E_INVALIDARG` before any window appears — a silent
+        /// "the prompt never opened" from the caller's side. Offsets here are
+        /// the packed ones, not the padded ones.
+        #[test]
+        fn the_task_dialog_layout_matches_win32() {
+            assert_eq!(
+                size_of::<TaskDialogConfig>(),
+                160,
+                "TASKDIALOGCONFIG on x64"
+            );
+            assert_eq!(offset_of!(TaskDialogConfig, cb_size), 0);
+            assert_eq!(offset_of!(TaskDialogConfig, hwnd_parent), 4);
+            assert_eq!(offset_of!(TaskDialogConfig, flags), 20);
+            assert_eq!(offset_of!(TaskDialogConfig, window_title), 28);
+            assert_eq!(offset_of!(TaskDialogConfig, main_instruction), 44);
+            assert_eq!(offset_of!(TaskDialogConfig, content), 52);
+            assert_eq!(offset_of!(TaskDialogConfig, buttons), 64);
+            assert_eq!(offset_of!(TaskDialogConfig, default_button), 72);
+            assert_eq!(offset_of!(TaskDialogConfig, verification_text), 92);
+            assert_eq!(offset_of!(TaskDialogConfig, footer), 132);
+            assert_eq!(offset_of!(TaskDialogConfig, callback), 140);
+            assert_eq!(offset_of!(TaskDialogConfig, width), 156);
+
+            assert_eq!(
+                size_of::<TaskDialogButton>(),
+                12,
+                "TASKDIALOG_BUTTON on x64"
+            );
+            assert_eq!(offset_of!(TaskDialogButton, id), 0);
+            assert_eq!(offset_of!(TaskDialogButton, text), 4);
+        }
+
+        /// Cancel / Esc must never be treated as a remembered decision: the
+        /// dialog is allowed to be dismissed, but "keep for now" is not
+        /// "remember keep".
+        #[test]
+        fn only_real_buttons_carry_the_remember_flag() {
+            assert_eq!(
+                outcome_from(ACCEPT_ID, 1),
+                ChoiceOutcome::Accept { remember: true }
+            );
+            assert_eq!(
+                outcome_from(ACCEPT_ID, 0),
+                ChoiceOutcome::Accept { remember: false }
+            );
+            assert_eq!(
+                outcome_from(DECLINE_ID, 1),
+                ChoiceOutcome::Decline { remember: true }
+            );
+            assert_eq!(
+                outcome_from(DECLINE_ID, 0),
+                ChoiceOutcome::Decline { remember: false }
+            );
+            assert_eq!(outcome_from(ID_CANCEL, 1), ChoiceOutcome::Cancelled);
+            assert_eq!(outcome_from(ID_CANCEL, 0), ChoiceOutcome::Cancelled);
+            assert_eq!(outcome_from(9999, 1), ChoiceOutcome::Cancelled);
+        }
+    }
 }
 
 #[cfg(all(test, windows))]

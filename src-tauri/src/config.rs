@@ -111,8 +111,27 @@ pub struct Config {
     pub recent_workspaces: Vec<String>,
 
     /// npm dist-tag whose version dshell pins for npx / npm runtimes.
+    ///
+    /// This is about **new** tabs: the version channel the new-connection page
+    /// resolves when it creates a `RuntimeSpec`. It deliberately does not decide
+    /// what a restored tab does — that is [`Self::dsh_startup_policy`].
     #[serde(default = "default_channel")]
     pub dsh_version_channel: String,
+
+    /// What to do when a restored local npx tab has a newer DSH available.
+    ///
+    /// `"ask"` (default) shows one native prompt on startup, `"keep"` never
+    /// checks the registry and starts the saved version, and `"update"` switches
+    /// the restored tabs to the newer version silently. The name is about
+    /// *startup* on purpose: the version channel above still governs new tabs,
+    /// and source checkouts keep updating themselves.
+    ///
+    /// Additive on purpose: an older `config.json` without the field takes
+    /// `"ask"`, so no schema migration is needed (the same precedent as
+    /// `forceDshMotion` / `closeToTray`). An unknown value is tolerated as
+    /// `"ask"` at use time rather than rejecting the whole config.
+    #[serde(default = "default_startup_policy")]
+    pub dsh_startup_policy: String,
 
     #[serde(default = "default_runtime_id")]
     pub default_runtime: String,
@@ -288,6 +307,9 @@ impl DshHomeSetting {
 fn default_channel() -> String {
     "pinned".into()
 }
+fn default_startup_policy() -> String {
+    "ask".into()
+}
 fn default_runtime_id() -> String {
     "npx".into()
 }
@@ -317,6 +339,7 @@ impl Default for Config {
             workspace: None,
             recent_workspaces: Vec::new(),
             dsh_version_channel: default_channel(),
+            dsh_startup_policy: default_startup_policy(),
             default_runtime: default_runtime_id(),
             managed_installs: Vec::new(),
             extra_binary: None,
@@ -824,6 +847,46 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let back: Config = serde_json::from_str(&json).unwrap();
         assert!(!back.close_to_tray);
+    }
+
+    /// The startup version behavior is additive, like `closeToTray`: a file
+    /// written before the field existed takes `ask`, and a stored decision
+    /// survives a save/load cycle. Unknown values are tolerated on purpose —
+    /// `config.json` is hand-editable and a newer build may write a value this
+    /// one does not know; treating it as an error would wipe every other
+    /// preference.
+    #[test]
+    fn startup_version_policy_defaults_to_ask_and_is_additive() {
+        assert_eq!(Config::default().dsh_startup_policy, "ask");
+
+        let parsed: Config =
+            serde_json::from_str(r#"{"schemaVersion":2,"onboardingDone":true}"#).unwrap();
+        assert_eq!(
+            parsed.dsh_startup_policy, "ask",
+            "an older config takes the new default"
+        );
+
+        for policy in ["keep", "update"] {
+            let parsed: Config = serde_json::from_str(&format!(
+                r#"{{"schemaVersion":2,"onboardingDone":true,"dshStartupPolicy":"{policy}"}}"#
+            ))
+            .unwrap();
+            assert_eq!(parsed.dsh_startup_policy, policy);
+
+            let config = Config {
+                dsh_startup_policy: policy.to_string(),
+                ..Config::default()
+            };
+            let json = serde_json::to_string(&config).unwrap();
+            let back: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.dsh_startup_policy, policy);
+        }
+
+        let unknown: Config = serde_json::from_str(
+            r#"{"schemaVersion":2,"onboardingDone":true,"dshStartupPolicy":"from-a-newer-build"}"#,
+        )
+        .unwrap();
+        assert_eq!(unknown.dsh_startup_policy, "from-a-newer-build");
     }
 
     /// `schemaVersion: 1` stored `killOnClose: false`, because that *was* the

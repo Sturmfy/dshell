@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Mutex;
 
@@ -162,6 +163,32 @@ impl AppState {
 
     pub async fn config_snapshot(&self) -> Config {
         self.config.lock().await.clone()
+    }
+
+    /// Registry dist-tags, shared by the startup check and the new-connection
+    /// page. The 10-minute cache is deliberately here rather than in a command:
+    /// two `npm view` calls racing on a slow registry would be pointless, and a
+    /// page refresh should not have to wait for another one.
+    ///
+    /// `timeout` bounds the network call itself; a cache hit ignores it.
+    pub async fn registry_dist_tags(&self, timeout: Duration) -> Option<DistTags> {
+        const TTL: Duration = Duration::from_secs(600);
+        {
+            let cached = self.dist_tags.lock().await;
+            if let Some((at, tags)) = cached.as_ref() {
+                if at.elapsed() < TTL {
+                    return Some(tags.clone());
+                }
+            }
+        }
+        let node = self.node().await;
+        let npm = node::find_npm(node.as_ref())?;
+        let tags = crate::runtime::npxcache::dist_tags_with_timeout(&npm, timeout).await?;
+        {
+            let mut cached = self.dist_tags.lock().await;
+            *cached = Some((std::time::Instant::now(), tags.clone()));
+        }
+        Some(tags)
     }
 
     pub async fn update_config<F>(&self, mutate: F) -> Result<Config, Failure>

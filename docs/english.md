@@ -39,6 +39,7 @@ dshell only does three things: **start or attach `dsh web`, capture the launch t
 - **Connection first** — attaching to a local or remote instance needs no Node. dshell scans for instances already running on this machine, remembers recent connections, and lets you pin the ones you use.
 - **Browser-style tabs** — `Ctrl+T` new, `Ctrl+W` close, `Ctrl+Tab` cycle, drag to reorder, double-click to rename, middle-click to close.
 - **The window comes back** — position, size and maximized state are remembered between runs, and the window reopens at the same spot on the same monitor. A resolution change, a rearranged desktop or an unplugged second screen still puts it fully on screen.
+- **DSH version check on restart** — a restored local npx tab checks for a newer DSH before its backend starts. Choose *ask every time*, *keep the old version* or *update to the new version*; the prompt's "remember" checkbox writes that setting, which you can change at any time. Source checkouts and the other runtimes are unaffected.
 - **Follows the DSH theme** — the tab strip switches between light and dark with the active DSH page.
 - **Your data stays yours** — dshell's config, runtimes and webview storage live in one data root; `DSH_HOME` is left untouched by default, so existing history, settings and API keys keep working.
 
@@ -112,7 +113,8 @@ $env:DSHELL_DEBUG='1'
 - No bundled Node and no model credentials handled by dshell; API keys stay in DSH's own settings.
 - dshell never reads `~/.dsh/.credentials.yaml` to mint cookies.
 - "Start local" via npx downloads the official distribution on first use (~450 MB); later launches use the cache.
-- No auto-update in the first release.
+- The version check only covers restored local npx tabs and needs access to the npm registry. Source checkouts, managed trees and other backend binaries are left alone. "Update to the new version" means DSH, not dshell itself.
+- No auto-update of dshell in the first release.
 
 ## Documentation
 

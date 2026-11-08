@@ -162,6 +162,11 @@ function renderEnvironment(main: HTMLElement, info: AppInfo): void {
   main.appendChild(env.root);
 }
 
+/** Unknown stored values (from a newer build) read as the product default. */
+function normalizeStartupPolicy(value: string): string {
+  return value === 'keep' || value === 'update' ? value : 'ask';
+}
+
 function renderPreferences(main: HTMLElement, info: AppInfo): void {
   const config = info.config;
   const prefs = section('偏好');
@@ -182,7 +187,24 @@ function renderPreferences(main: HTMLElement, info: AppInfo): void {
           await store.refreshRuntimes();
         },
       ),
-      '官方明示处于开发者预览：固定版本最稳，浮动通道可能随时引入破坏性变更。',
+      '决定「新建连接」时 npx 使用哪个版本。官方明示处于开发者预览：固定版本最稳，浮动通道可能随时引入破坏性变更。',
+    ),
+  );
+
+  prefs.body.appendChild(
+    row(
+      '启动时的 DSH 版本行为',
+      labeledSelect(
+        '',
+        normalizeStartupPolicy(config.dshStartupPolicy),
+        [
+          ['ask', '每次询问（发现新版本时提示）'],
+          ['keep', '维持旧版本'],
+          ['update', '更新到新版本（自动）'],
+        ],
+        (value) => store.updateConfig({ dshStartupPolicy: value }),
+      ),
+      '只影响重启后自动恢复的本地 npx 选项卡。源码版每次启动会自行同步；本地维护目录与其他后端二进制不会被改动。检测需要能访问 npm。新建连接仍按上面的「DSH 版本通道」选择。',
     ),
   );
 

@@ -158,6 +158,13 @@ export interface Config {
   workspace?: string | null;
   recentWorkspaces: string[];
   dshVersionChannel: string;
+  /**
+   * What a restored local npx tab does when a newer DSH is available:
+   * `"ask"` (default), `"keep"` or `"update"`. A loose string on purpose: an
+   * unknown value from a newer build falls back to asking instead of breaking
+   * the whole config.
+   */
+  dshStartupPolicy: string;
   defaultRuntime: string;
   managedInstalls: { id: string; label: string; root: string; mode: string }[];
   extraBinary?: string | null;
