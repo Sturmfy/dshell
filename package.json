@@ -19,7 +19,6 @@
     "probe": "node tools/dsh-contract-probe.mjs",
     "version": "node tools/set-version.mjs",
     "version:check": "node tools/check-version.mjs",
-    "bundle:linux": "node tools/build-ui.mjs && tauri build --bundles appimage",
     "bundle:mac": "node tools/build-ui.mjs && tauri build --target universal-apple-darwin --bundles app,dmg"
   },
   "devDependencies": {

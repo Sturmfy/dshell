@@ -5,7 +5,7 @@
   One binary, one window, as many native DSH tabs as you need.</p>
   <p>
     <a href="../LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f6fed"></a>
-    <img alt="Platform: Windows, Linux, macOS" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20Linux%20%7C%20macOS-0078D6">
+    <img alt="Platform: Windows, macOS" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS-0078D6">
     <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB">
     <img alt="Rust 1.90+" src="https://img.shields.io/badge/Rust-1.90%2B-000000">
   </p>
@@ -58,8 +58,9 @@ Get the package for your platform from [Releases](https://github.com/Sturmfy/dsh
 | Platform | Artifact | Notes |
 |---|---|---|
 | Windows 10/11 | `dshell-<version>-windows-x64.exe` | single file; WebView2 Runtime required (usually present) |
-| Linux x86_64 | `dshell-<version>-linux-x86_64.AppImage` | single-file AppImage; WebKitGTK 4.1 required |
 | macOS 11+ | `dshell-<version>-macos-universal.dmg` | universal; unsigned builds need right-click → Open, or `xattr -dr com.apple.quarantine` |
+
+Linux is not shipped yet (the code paths exist but are unverified); see [docs/platforms.md](platforms.md).
 
 The first launch opens a wizard: choose a data location → check the environment → create a connection.
 
@@ -76,19 +77,18 @@ The data root has a four-level fallback; the settings page always shows which le
 | 1 | `--data-root <path>` |
 | 2 | `$DSHELL_HOME` |
 | 3 | `dshell-data/` next to the executable (next to the `.app` on macOS) |
-| 4 | `%LOCALAPPDATA%\dshell` / `~/.local/share/dshell` / `~/Library/Application Support/dshell` |
+| 4 | `%LOCALAPPDATA%\dshell` / `~/Library/Application Support/dshell` |
 
 This holds dshell's config, downloaded runtimes and per-instance webview storage. DSH's own `~/.dsh` (sessions, settings, credentials) is untouched by default.
 
 ### Build from source
 
-Rust ≥ 1.90, Node ≥ 20 (build only), and the platform's web engine (WebView2 on Windows, WebKitGTK on Linux, WebKit on macOS).
+Rust ≥ 1.90, Node ≥ 20 (build only), and the platform's web engine (WebView2 on Windows, WebKit on macOS).
 
 ```powershell
 npm install           # esbuild / typescript / @tauri-apps/api
 npm run build         # Windows: build the UI + release binary
 npm run binary        # Windows: stage release/dshell.exe and assert it is a single file
-npm run bundle:linux  # Linux: build the AppImage
 npm run bundle:mac    # macOS: build the universal .app + .dmg
 npm run app           # run in development mode
 npm test              # Rust unit tests
@@ -96,7 +96,8 @@ npm run check         # clippy -D warnings
 npm run icons         # logo-tile.svg → PNG → icon.ico (needs local Chrome/Edge)
 ```
 
-Linux also needs Tauri's system packages (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, …), listed in [docs/platforms.md](platforms.md).
+macOS builds need Xcode Command Line Tools plus
+`rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 
 ### Keyboard shortcuts
 
@@ -121,8 +122,8 @@ $env:DSHELL_DEBUG='1'
 
 ## Scope
 
-- Windows 10/11, Linux (glibc ≥ 2.35, X11/Wayland + WebKitGTK 4.1) and macOS 11+. Windows is the reference platform; the macOS/Linux GUI checklist lives in [docs/platforms.md](platforms.md).
-- On Windows, the native folder chooser and real-path `@file` chips come from the WebView2 bridge. On macOS/Linux DSH falls back to its own chooser and browser uploads; those two enhancements are not available yet (documented in the platform notes).
+- Windows 10/11 and macOS 11+. Windows is the reference platform; the macOS GUI checklist lives in [docs/platforms.md](platforms.md). Linux is not shipped yet (its code paths exist but are unverified).
+- On Windows, the native folder chooser and real-path `@file` chips come from the WebView2 bridge. On macOS DSH falls back to its own chooser and browser uploads; those two enhancements are not available yet (documented in the platform notes).
 - No bundled Node and no model credentials handled by dshell; API keys stay in DSH's own settings.
 - dshell never reads `~/.dsh/.credentials.yaml` to mint cookies.
 - "Start local" via npx downloads the official distribution on first use (~450 MB); later launches use the cache.

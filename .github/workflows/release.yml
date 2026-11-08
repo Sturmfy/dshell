@@ -1,9 +1,12 @@
 name: release
 
-# Tag-driven release. A `v*` tag builds the three deliverables and creates a
+# Tag-driven release. A `v*` tag builds the two deliverables and creates a
 # draft GitHub Release; a manual run with `publish: false` builds the same
 # artifacts without touching Releases, which is how a port gets tested before
 # the first cross-platform tag exists.
+#
+# Linux is not shipped yet (docs/platforms.md): its code paths exist but have no
+# CI row and no release job.
 on:
   push:
     tags: ['v*']
@@ -75,10 +78,7 @@ jobs:
           - os: windows-latest
             platform: windows
             arch: x64
-          - os: ubuntu-22.04
-            platform: linux
-            arch: x86_64
-          - os: macos-14
+          - os: macos-latest
             platform: macos
             arch: universal
     runs-on: ${{ matrix.os }}
@@ -92,14 +92,6 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-
-      - name: Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf libfuse2
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -157,21 +149,6 @@ jobs:
           New-Item -ItemType Directory -Force staging | Out-Null
           Copy-Item release/dshell.exe "staging/dshell-$version-windows-x64.exe"
 
-      # ---- Linux: AppImage, built by the Tauri bundler ------------------------
-      - name: Build (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          npm run build:ui
-          npx tauri build --bundles appimage
-
-      - name: Stage artifact (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          version='${{ needs.verify.outputs.version }}'
-          mkdir -p staging
-          cp src-tauri/target/release/bundle/appimage/*.AppImage \
-            "staging/dshell-$version-linux-x86_64.AppImage"
-
       # ---- macOS: one universal .app inside a .dmg ---------------------------
       - name: Build (macOS)
         if: runner.os == 'macOS'
@@ -207,7 +184,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: |
-          sha256sum -- *.exe *.AppImage *.dmg > SHA256SUMS.txt
+          sha256sum -- *.exe *.dmg > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Create the draft release

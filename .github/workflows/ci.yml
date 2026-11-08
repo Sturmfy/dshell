@@ -1,8 +1,8 @@
 name: ci
 
 # The portability feedback loop: every push/PR must compile, test and lint on the
-# three platforms a release targets. Windows is the reference platform; Linux and
-# macOS are the ones a Windows-only laptop cannot check.
+# platforms a release targets. macOS runs on the arm64 image; Linux is not
+# shipped yet (see docs/platforms.md), so it has no CI row.
 on:
   push:
     branches: [main]
@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-22.04, macos-14]
+        os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -33,16 +33,6 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-
-      # Tauri on Linux links WebKitGTK/GTK at build time, so the dev packages
-      # are a build dependency, not a runtime nicety.
-      - name: Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf libfuse2
 
       - uses: dtolnay/rust-toolchain@stable
         with:

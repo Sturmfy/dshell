@@ -1,8 +1,9 @@
 # dshell
 
-DeepSeek Harness 的桌面入口：Windows 上是**一个独立二进制**，Linux 是一个 AppImage，
-macOS 是一个通用 `.app`；三者都在一个窗口里用类似 Windows Terminal / Chrome 的
-顶部选项卡承载多个 DSH 会话，内容区 100% 是 DSH 原生界面。
+DeepSeek Harness 的桌面入口：Windows 上是**一个独立二进制**，macOS 是一个通用
+`.app`；两者都在一个窗口里用类似 Windows Terminal / Chrome 的顶部选项卡承载多个
+DSH 会话，内容区 100% 是 DSH 原生界面。Linux 的代码路径保留，但暂不发布（见
+`docs/platforms.md`）。
 
 dshell 不重新实现 DSH，也不修改 DSH。它为每个选项卡启动或连接一个 `dsh web`
 服务器，把服务器打印的**带 token 的启动 URL** 交给一个独立 webview 加载；之后
@@ -107,8 +108,7 @@ Tauri 子 webview 又没有 z-order API，所以"谁在上面"不能靠猜：
 | Rust | stable ≥ 1.90 | 构建 dshell 自身 |
 | MSVC Build Tools | VS 2022+ | Windows 上的 Tauri 只支持 MSVC triple |
 | Node.js | ≥ 20（仅构建前端用） | `tools/build-ui.mjs`；**不随附、不打包** |
-| WebView2 Runtime | Win11 预装 | Windows 运行期依赖；macOS/Linux 用系统 WebKit |
-| WebKitGTK 4.1 / GTK 3 | 发行版提供 | Linux 运行期依赖（构建还要 `-dev` 包） |
+| WebView2 Runtime | Win11 预装 | Windows 运行期依赖；macOS 用系统 WebKit |
 
 终端用户只需要平台自带的 Web 引擎：dshell 自己不随附 Node，也从不下载 Node。
 
@@ -118,7 +118,6 @@ Tauri 子 webview 又没有 z-order API，所以"谁在上面"不能靠猜：
 npm install            # 只装 esbuild / typescript / @tauri-apps/api（类型与打包）
 npm run build          # Windows：构建 UI + release 二进制
 npm run binary         # Windows：把产物落到 release/dshell.exe，并断言它是单文件
-npm run bundle:linux   # Linux：构建 AppImage
 npm run bundle:mac     # macOS：构建通用 .app + .dmg
 npm run app            # 开发运行（debug）
 npm run check          # clippy -D warnings
@@ -130,7 +129,7 @@ npm run icons          # logo-tile.svg → PNG → icon.ico（需要本机 Chrom
 前端资源通过 Tauri 的 asset embedding 编进可执行文件，运行期不读任何磁盘资源目录；
 Windows 的 WebView2Loader 走静态导入库，所以没有任何随附 DLL。`npm run binary` 会实际清点
 `release/` 目录并在出现多余文件时**失败**，而不是只在文档里声称。macOS 的 `.app`
-与 Linux 的 AppImage 由 Tauri bundler 生成，形态差异见 `docs/platforms.md`。
+与 dmg 由 Tauri bundler 生成，形态差异见 `docs/platforms.md`。
 
 > ⚠️ **改了 UI 一定要重新 build 二进制。** `dist/` 是编进 exe 的输入，而 cargo 默认
 > 不知道这件事 —— 只跑 `npm run build:ui` 会得到一个**仍是旧 CSS/JS** 的可执行文件，
@@ -188,8 +187,9 @@ $env:DSHELL_DEBUG = '1'
    因为后者有 1024 字符截断问题；写完广播 `WM_SETTINGCHANGE`。Unix 不支持持久化
    环境变量，`--data-root` 与 shell 里导出的变量才是跨平台方式）
 3. `<exe 同级>/dshell-data/`（真便携默认；macOS 取 `.app` 同级）
-4. 系统数据目录 + `dshell/`：Windows `%LOCALAPPDATA%`、Linux
-   `$XDG_DATA_HOME`（缺省 `~/.local/share`）、macOS `~/Library/Application Support`
+4. 系统数据目录 + `dshell/`：Windows `%LOCALAPPDATA%`、macOS
+   `~/Library/Application Support`（Linux 的 `$XDG_DATA_HOME` 分支保留在代码里，
+   暂未发布）
 
 设置页**始终显示最终生效的是哪一层**。
 
@@ -716,13 +716,13 @@ capability，因此内容页即使被导航到外部 origin，也拿不到 dshel
   这与隐藏窗口换取“关闭不打断会话”的取舍是同一件事。
 - **托盘创建失败时不会隐藏窗口**：此时关闭窗口仍走原来的退出路径，避免窗口消失后
   没有恢复入口；失败原因只写进 `DSHELL_DEBUG` 日志。
-- **平台支持**：Windows 已完整验收；Linux/macOS 的移植把平台相关代码集中在
+- **平台支持**：Windows 已完整验收；macOS 已接入发布与冒烟清单。平台相关代码集中在
   `platform.rs`（shell 打开、Web 引擎信息）、`win.rs`（Windows FFI；Unix 侧用
-  进程组代替 job object）、`root`（XDG / Application Support）与 `dsh::scan`
-  （`/proc/net/tcp` 与 BSD `netstat`）。内容页的 WebView2 bridge 仍是
-  Windows-only：Linux/macOS 不注入脚本，DSH 回退到自己的目录选择器与浏览器
-  上传路径（差异见 `docs/platforms.md`）。这些分支的 GUI 验收依赖真实设备，
-  CI 只覆盖编译、单测与打包。
+  进程组代替 job object）、`root`（系统数据目录）、`dsh::scan`（BSD `netstat`）与
+  `dialog`（macOS 走 dialog 插件）。内容页的 WebView2 bridge 仍是 Windows-only：
+  macOS 不注入脚本，DSH 回退到自己的目录选择器与浏览器上传路径（差异见
+  `docs/platforms.md`）。Linux 的分支（WebKitGTK、`/proc/net/tcp`、XDG）保留但
+  不发布、不跑 CI；恢复前必须先有真实设备的验收结果。
 
 ---
 
@@ -752,7 +752,7 @@ capability，因此内容页即使被导航到外部 origin，也拿不到 dshel
 - **放弃**：隐藏窗口菜单加速键（见上文「已知限制」）。
 - **单文件**：设计文档说"没有官方单文件方案"。本实现通过「Tauri 不启用 bundle
   + 前端资源 asset embedding + WebView2Loader 走静态导入库」在 Windows 上达到
-  单个 `.exe`；macOS/Linux 的产物形态不同（`.app` / AppImage），见 `docs/platforms.md`。
+  单个 `.exe`；macOS 的 `.app` 形态不同，见 `docs/platforms.md`。
 
 ---
 

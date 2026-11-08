@@ -9,7 +9,7 @@ git push --follow-tags
 ```
 
 `npm version` 会依次：跑 `tools/set-version.mjs`（同步四处）→ 提交 → 打 `vX.Y.Z`
-tag。推送 tag 后，GitHub Actions 的 `release` 工作流构建三平台产物并创建 Release。
+tag。推送 tag 后，GitHub Actions 的 `release` 工作流构建 Windows/macOS 产物并创建 Release。
 
 ## 版本号规则
 
@@ -42,21 +42,21 @@ npm run test:version             # 版本脚本自身的单测
 
 ## CI 行为
 
-- `.github/workflows/ci.yml`：push/PR 到 `main`，三平台编译 + `cargo test` +
+- `.github/workflows/ci.yml`：push/PR 到 `main`，Windows/macOS 编译 + `cargo test` +
   clippy + bridge 测试。移植期它就是红灯。
 - `.github/workflows/release.yml`：
-  - `push` 一个 `v*` tag → 校验版本 → 三平台构建 → 创建 Release（默认 draft）。
+  - `push` 一个 `v*` tag → 校验版本 → Windows/macOS 构建 → 创建 Release（默认 draft）。
   - `workflow_dispatch` 可以只构建不发布（`publish=false`），用于移植期自测：
     产物在 Actions 的 workflow artifacts 里，不会碰 Releases。
   - tag 含 `-`（如 `v0.2.0-beta.1`）自动标为 prerelease。
   - Release 附件：`dshell-<ver>-windows-x64.exe`、
-    `dshell-<ver>-linux-x86_64.AppImage`、`dshell-<ver>-macos-universal.dmg`、
+    `dshell-<ver>-macos-universal.dmg`、
     `SHA256SUMS.txt`。
 
 ## 发布前检查单
 
 1. `npm run version:check` 通过；`npm test`、`npm run check` 通过。
-2. 三平台冒烟（见 `docs/platforms.md`）全绿；任一失败就不要打 tag。
+2. Windows 与 macOS 冒烟（见 `docs/platforms.md`）全绿；任一失败就不要打 tag。
 3. `npm version ...` → `git push --follow-tags` → 等 Actions。
 4. 打开 draft Release，核对附件名、大小、`SHA256SUMS.txt` 与 notes，再点发布。
 5. 发布后把 README 的下载段与 `docs/platforms.md` 的“最近验证版本”更新（如有变化）。
