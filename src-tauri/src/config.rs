@@ -654,16 +654,16 @@ mod tests {
 
     #[test]
     fn instance_mode_derives_from_workspace_name() {
+        // Built with `Path::join`, so the assertion holds on every separator.
         let setting = DshHomeSetting::Instance;
+        let data_root = Path::new("dshell-data");
+        let dsh_home_root = data_root.join("dsh-home");
+        let workspace = Path::new("projects").join("my-app");
         let value = setting
-            .resolve(
-                Path::new("E:\\data"),
-                Path::new("E:\\data\\dsh-home"),
-                Path::new("E:\\proj\\my-app"),
-            )
+            .resolve(data_root, &dsh_home_root, &workspace)
             .unwrap()
             .unwrap();
-        assert!(value.ends_with("dsh-home\\my-app"));
+        assert_eq!(Path::new(&value), dsh_home_root.join("my-app"));
     }
 
     /// The restore path is only as good as this parser: a silent failure here
@@ -1031,23 +1031,25 @@ mod tests {
     #[test]
     fn source_checkout_falls_back_inside_the_data_root() {
         let config = Config::default();
-        // The default container is `<data root>\runtimes`, and the checkout is one
+        // Built with `Path::join` so the expectation is separator-agnostic: the
+        // default container is `<data root>/runtimes`, and the checkout is one
         // fixed subdirectory inside whatever container the user picked.
+        let data_root = Path::new("dshell-data");
         assert_eq!(
-            config.source_checkout_dir(Path::new(r"E:\dshell-data")),
-            std::path::PathBuf::from(r"E:\dshell-data\runtimes\deepseek-harness")
+            config.source_checkout_dir(data_root),
+            data_root.join("runtimes").join("deepseek-harness")
         );
         let chosen = Config {
-            source_container: Some(r"D:\dsh".into()),
+            source_container: Some("chosen-container".into()),
             ..Config::default()
         };
         assert_eq!(
-            chosen.source_container_dir(Path::new(r"E:\dshell-data")),
-            std::path::PathBuf::from(r"D:\dsh")
+            chosen.source_container_dir(data_root),
+            std::path::PathBuf::from("chosen-container")
         );
         assert_eq!(
-            chosen.source_checkout_dir(Path::new(r"E:\dshell-data")),
-            std::path::PathBuf::from(r"D:\dsh\deepseek-harness")
+            chosen.source_checkout_dir(data_root),
+            std::path::PathBuf::from("chosen-container").join("deepseek-harness")
         );
     }
 }

@@ -604,6 +604,7 @@ mod tests {
     /// Regression: `node --import E:\…\index.mjs` fails with
     /// `ERR_UNSUPPORTED_ESM_URL_SCHEME` ("Received protocol 'e:'"), because a
     /// Windows path is parsed as a URL. The loader must be a `file://` URL.
+    #[cfg(windows)]
     #[test]
     fn the_tsx_loader_is_passed_as_a_file_url() {
         let url = file_url(Path::new(
@@ -612,6 +613,20 @@ mod tests {
         assert!(url.starts_with("file:///E:/"), "{url}");
         assert!(!url.contains('\\'), "{url}");
         assert!(url.ends_with("/node_modules/tsx/dist/esm/index.mjs"), "{url}");
+    }
+
+    /// The Unix half of the same rule: an absolute POSIX path becomes a
+    /// three-slash `file:` URL, and no platform separator leaks into it.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_tsx_loader_is_passed_as_a_file_url() {
+        let url = file_url(Path::new(
+            "/Users/runner/work/dshell/node_modules/tsx/dist/esm/index.mjs",
+        ));
+        assert_eq!(
+            url,
+            "file:///Users/runner/work/dshell/node_modules/tsx/dist/esm/index.mjs"
+        );
     }
 
     #[test]
